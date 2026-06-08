@@ -1,0 +1,27 @@
+﻿arabic,arabic_image,english
+عَيْبٌ,noun_images/noun_001.png,Flaw
+عُيُوبٌ,noun_images/noun_002.png,Flaw (P)
+ِجَارحَةٌ,noun_images/noun_003.png,Limb
+ِجَوَارحُ,noun_images/noun_004.png,Limb (P)
+دَاءٌ,noun_images/noun_005.png,Disease
+أدْوَاءٌَ,noun_images/noun_006.png,Disease (P)
+عُضْوٌ,noun_images/noun_007.png,Organ
+أعْضَاءٌَ,noun_images/noun_008.png,Organ (P)
+ِزنا,noun_images/noun_009.png,Adultery
+-,noun_images/noun_010.png,Adultery (P)
+دَاخِلٌِّي,noun_images/noun_011.png,Internal
+دَاخِلُِّيونَ,noun_images/noun_012.png,Internal (P)
+زَكَاةٌ,noun_images/noun_013.png,Charity
+زَكَوَاتٌ,noun_images/noun_014.png,Charity (P)
+غِيبَةٌ,noun_images/noun_015.png,Backbiting
+غِيبَاتٌ,noun_images/noun_016.png,Backbiting (P)
+نَمِيمَةٌ,noun_images/noun_017.png,Gossip
+نَمِيمَاتٌ,noun_images/noun_018.png,Gossip (P)
+ِسَلبٌّيْ,noun_images/noun_019.png,Negative
+ِسَلبُّيونَْ,noun_images/noun_020.png,Negative (P)
+حِيلَةٌ,noun_images/noun_021.png,"Trick, Strategy"
+حِيَلٌ,noun_images/noun_022.png,"Trick, Strategy (P)"
+يَسِيرٌ,noun_images/noun_023.png,Easy
+يَسِيرُونَ,noun_images/noun_024.png,Easy (P)
+سُبْحَانَ,noun_images/noun_025_fallback.png,Glory
+-,,Glory (P)

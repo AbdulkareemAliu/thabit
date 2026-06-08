@@ -1,0 +1,27 @@
+﻿arabic,arabic_image,english
+شُغْلٌ,noun_images/noun_001.png,Work
+أَشْغَالٌ,noun_images/noun_002.png,Work (P)
+تَاٌّم,noun_images/noun_003.png,Complete
+تَاُّمونَ,noun_images/noun_004.png,Complete (P)
+دَخْلٌ,noun_images/noun_005.png,Income
+-,noun_images/noun_006.png,Income (P)
+نَفَقَةٌ,noun_images/noun_007.png,Expenditures/Spending
+نَفَقَاتٌ,noun_images/noun_008.png,Expenditures/Spending (P)
+شَأنٌْ,noun_images/noun_009.png,Affair
+شُؤُونٌ,noun_images/noun_010.png,Affair (P)
+هَرَمٌ,noun_images/noun_011.png,Old age
+-,noun_images/noun_012.png,Old age (P)
+سَقَمٌ,noun_images/noun_013.png,Illness
+أَسْقَامٌ,noun_images/noun_014.png,Illness (P)
+غِنىً,noun_images/noun_015.png,Richness
+-,noun_images/noun_016.png,Richness (P)
+فَقْرٌ,noun_images/noun_017.png,Poverty
+-,noun_images/noun_018.png,Poverty (P)
+ِمَوْردٌ,noun_images/noun_019.png,Resource
+ِمَوَاردُ,noun_images/noun_020.png,Resource (P)
+ِرزْقٌ,noun_images/noun_021.png,Provision
+أَرْزَاقٌ,noun_images/noun_022.png,Provision (P)
+ثَرْوَةٌ,noun_images/noun_023_fallback.png,Treasure/Wealth
+ثَرَوَاتٌ,noun_images/noun_024_fallback.png,Treasure/Wealth (P)
+عِبْءٌ,noun_images/noun_025_fallback.png,Burden
+أعْبَاءٌَ,noun_images/noun_026_fallback.png,Burden (P)

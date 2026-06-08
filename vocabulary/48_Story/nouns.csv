@@ -1,0 +1,52 @@
+﻿arabic,arabic_image,english
+مَتَاعٌ,noun_images/noun_001.png,Provision/Enjoyment
+أمْتِعَةٌَ,noun_images/noun_002.png,Provision/Enjoyment (P)
+قَصْرٌ,noun_images/noun_003.png,Palace
+قُصُورٌ,noun_images/noun_004.png,Palace (P)
+غَليِظٌ,noun_images/noun_005.png,Thick
+غِالَظٌ,noun_images/noun_006.png,Thick (P)
+عَبَاءَةٌ,noun_images/noun_007.png,Cloak
+عَبَاءَاتٌ,noun_images/noun_008.png,Cloak (P)
+مَزْرَعَةٌ,noun_images/noun_009.png,Farm
+ِمَزَارعُ,noun_images/noun_010.png,Farm (P)
+زُخْرُفٌ,noun_images/noun_011.png,Ornament
+ِزَخَارفُ,noun_images/noun_012.png,Ornament (P)
+ثمَنٌَ,noun_images/noun_013.png,Price
+أثْمِنَةٌ,noun_images/noun_014.png,Price (P)
+مَنْصِبٌ,noun_images/noun_015.png,"Position, status"
+مَنَاصِبُ,noun_images/noun_016.png,"Position, status (P)"
+اِمْرٌُؤ/المَرْءُ,noun_images/noun_017.png,Person
+-,noun_images/noun_018.png,Person (P)
+فُضُولٌ,noun_images/noun_019.png,Excess
+-,noun_images/noun_020.png,Excess (P)
+مَقَامٌ,noun_images/noun_021.png,Status
+مَقَامَاتٌ,noun_images/noun_022.png,Status (P)
+فاخِرٌ,noun_images/noun_023.png,Luxurious
+-,noun_images/noun_024.png,Luxurious (P)
+عَالقَةٌ,noun_images/noun_025.png,Relationship
+عَالقَاتٌ,noun_images/noun_026.png,Relationship (P)
+ِمُوريتَانِيا,noun_images/noun_027.png,Mauritania
+-,noun_images/noun_028.png,Mauritania (P)
+عِبْرَةٌ,noun_images/noun_029.png,Lesson
+عِبَرٌ,noun_images/noun_030.png,Lesson (P)
+لَهْوٌ,noun_images/noun_031.png,Amusement
+-,noun_images/noun_032.png,Amusement (P)
+مَلٌَّذ,noun_images/noun_033.png,Pleasure
+مَلََّذاتٌ,noun_images/noun_034.png,Pleasure (P)
+مَالذُّ,noun_images/noun_035.png,Pleasure (P)
+غَايَةٌ,noun_images/noun_036.png,Goal
+غَايَاتٌ,noun_images/noun_037.png,Goal (P)
+مَاِّدٌّي,noun_images/noun_038.png,Material
+ماِّدُّيونَ,noun_images/noun_039.png,Material (P)
+سُبَاتٌ,noun_images/noun_040.png,Sleep
+-,noun_images/noun_041.png,Sleep (P)
+مُوْضَةٌ,noun_images/noun_042.png,Fashion
+موضاتٌ,noun_images/noun_043.png,Fashion (P)
+سِينِمَا,noun_images/noun_044.png,Cinema
+-,,Cinema (P)
+بُرْهَةٌ,noun_images/noun_046_fallback.png,"Period, duration"
+بُرْهَاتٌ,noun_images/noun_047_fallback.png,"Period, duration (P)"
+مَكَانَةٌ,noun_images/noun_048_fallback.png,Position
+مَكَانَاتٌ,noun_images/noun_049_fallback.png,Position (P)
+ظرْفٌَ,noun_images/noun_050_fallback.png,Condition
+ظروفٌُ,noun_images/noun_051_fallback.png,Condition (P)

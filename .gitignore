@@ -1,0 +1,13 @@
+node_modules/
+dist/
+*.tsbuildinfo
+.DS_Store
+
+# Local vocabulary backups (not needed in repo)
+vocabulary_before_*/
+extracted_vocabulary_raw_pdf_extract_backup/
+
+# Editor / local tooling
+.cursor/
+.agents/
+agent-transcripts/

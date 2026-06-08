@@ -1,0 +1,16 @@
+﻿arabic,arabic_image,english
+يَتِيمٌ,noun_images/noun_001.png,Orphan
+أَيْتَامٌ,noun_images/noun_002.png,Orphan (P)
+يَتامَى,noun_images/noun_003.png,Orphan (P)
+حَمِيدٌ,noun_images/noun_004.png,Praiseworthy / Commendable
+-,noun_images/noun_005.png,Praiseworthy / Commendable (P)
+صِفَةٌ,noun_images/noun_006.png,Atribute
+صِفَاتٌ,noun_images/noun_007.png,Atribute (P)
+كَنْزٌ,noun_images/noun_008.png,Treasure
+كُنوزٌ,noun_images/noun_009.png,Treasure (P)
+فَسَادٌ,noun_images/noun_010.png,Corruption
+-,noun_images/noun_011.png,Corruption (P)
+قَسْوَةٌ,noun_images/noun_012_fallback.png,Harshness
+-,,Harshness (P)
+ليِنٌ,noun_images/noun_014_fallback.png,Softness
+-,,Softness (P)
