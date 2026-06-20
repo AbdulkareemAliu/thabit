@@ -1,4 +1,4 @@
-import { PREREQUISITE_COMPLETE_LESSON_NUMBERS } from "./config";
+import { clearLessonBatchSessions } from "./batch-session";
 import { lessons } from "./data";
 import type { BatchPhase, Lesson, LessonStatus, LessonStep, LessonStepKind, SectionKind, StepStatus } from "./types";
 
@@ -12,7 +12,11 @@ export type LessonProgressSummary = {
 
 export const COMPLETED_PHASES_STORAGE_KEY = "thabit.completedBatchPhases";
 export const COMPLETED_STEPS_STORAGE_KEY = "thabit.completedStepIds";
+export const INITIAL_SETUP_STORAGE_KEY = "thabit.initialSetup.v1";
 const RESET_LESSON_2_MIGRATION_KEY = "thabit.migration.resetLesson2AndStreak_v1";
+const ALL_BATCH_PHASES: BatchPhase[] = ["exposure", "memory-match", "multiple-choice", "writing-test"];
+
+export const LESSON_SECTION_ORDER: SectionKind[] = ["nouns", "phrases", "verbs"];
 const BATCH_PHASE_MIGRATION_KEY = "thabit.migration.batchPhaseWritingTest_v1";
 const BATCH_REVIEW_STEP_MIGRATION_KEY = "thabit.migration.batchReviewSteps_v1";
 
@@ -85,7 +89,7 @@ export const getLessonFinalStepId = (lessonId: string) => `${lessonId}-final`;
 
 export const isLessonFinalComplete = (lessonId: string, completedStepIds: string[]) => completedStepIds.includes(getLessonFinalStepId(lessonId));
 
-export const isLessonComplete = (lesson: Lesson, completedStepIds: string[]) => PREREQUISITE_COMPLETE_LESSON_NUMBERS.includes(lesson.number) || isLessonFinalComplete(lesson.id, completedStepIds);
+export const isLessonComplete = (lesson: Lesson, completedStepIds: string[]) => isLessonFinalComplete(lesson.id, completedStepIds);
 
 export const getCurrentLesson = (allLessons: Lesson[], completedStepIds: string[]) => allLessons.find((lesson) => !isLessonComplete(lesson, completedStepIds));
 
@@ -179,12 +183,73 @@ export const getEffectiveMemorizationSteps = (lesson: Lesson, completedStepIds: 
   return lesson.steps.map((step) => ({ ...step, status: resolveStatus(step) }));
 };
 
+export const needsInitialSetup = () => {
+  if (window.localStorage.getItem(INITIAL_SETUP_STORAGE_KEY)) return false;
+  return readStoredJson<string[]>(COMPLETED_STEPS_STORAGE_KEY, []).length === 0;
+};
+
+export const lessonSectionHasSteps = (lesson: Lesson, section: SectionKind) =>
+  lesson.steps.some((step) => step.section === section && TRACKABLE_STEP_KINDS.includes(step.kind));
+
+export const getInitialSetupSectionOptions = (lesson: Lesson) =>
+  LESSON_SECTION_ORDER.filter((section) => lessonSectionHasSteps(lesson, section));
+
+/** Credit all prior lessons and earlier sections in the target lesson as complete. */
+export const applyInitialStudyPosition = (allLessons: Lesson[], lessonId: string, startSection: SectionKind) => {
+  const targetLesson = allLessons.find((lesson) => lesson.id === lessonId);
+  if (!targetLesson) {
+    throw new Error(`Unknown lesson: ${lessonId}`);
+  }
+
+  const startSectionIndex = LESSON_SECTION_ORDER.indexOf(startSection);
+  if (startSectionIndex === -1) {
+    throw new Error(`Unknown section: ${startSection}`);
+  }
+
+  const completedStepIds = new Set<string>();
+  const completedBatchPhases: Record<string, BatchPhase[]> = {};
+
+  const creditSteps = (lesson: Lesson, sections?: SectionKind[]) => {
+    for (const step of getTrackableSteps(lesson)) {
+      if (sections && (!step.section || !sections.includes(step.section))) continue;
+      completedStepIds.add(step.id);
+      if (step.kind === "batch") {
+        completedBatchPhases[step.id] = [...ALL_BATCH_PHASES];
+      }
+    }
+  };
+
+  for (const lesson of allLessons) {
+    if (lesson.number < targetLesson.number) {
+      creditSteps(lesson);
+    }
+  }
+
+  creditSteps(targetLesson, LESSON_SECTION_ORDER.slice(0, startSectionIndex));
+
+  const completedStepIdList = [...completedStepIds];
+
+  window.localStorage.setItem(
+    INITIAL_SETUP_STORAGE_KEY,
+    JSON.stringify({
+      lessonId,
+      startSection,
+      completedAt: new Date().toISOString(),
+    }),
+  );
+  window.localStorage.setItem(COMPLETED_STEPS_STORAGE_KEY, JSON.stringify(completedStepIdList));
+  window.localStorage.setItem(COMPLETED_PHASES_STORAGE_KEY, JSON.stringify(completedBatchPhases));
+
+  return { completedStepIds: completedStepIdList, completedBatchPhases };
+};
+
 export const resetLessonProgress = (lessonId: string) => {
   const completedStepIds = readStoredJson<string[]>(COMPLETED_STEPS_STORAGE_KEY, []).filter((stepId) => !isLessonStepId(stepId, lessonId));
   const completedBatchPhases = Object.fromEntries(Object.entries(readStoredJson<Record<string, BatchPhase[]>>(COMPLETED_PHASES_STORAGE_KEY, {})).filter(([stepId]) => !isLessonStepId(stepId, lessonId)));
 
   window.localStorage.setItem(COMPLETED_STEPS_STORAGE_KEY, JSON.stringify(completedStepIds));
   window.localStorage.setItem(COMPLETED_PHASES_STORAGE_KEY, JSON.stringify(completedBatchPhases));
+  clearLessonBatchSessions(lessonId);
 
   return { completedStepIds, completedBatchPhases };
 };

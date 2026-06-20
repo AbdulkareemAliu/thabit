@@ -86,6 +86,18 @@ button {
     padding: 0.5rem 0 0.25rem;
 }
 
+.flashcard-study-reveal-zone {
+    display: flex;
+    flex: 1;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    touch-action: manipulation;
+    -webkit-user-select: auto;
+    user-select: auto;
+    padding: 0.5rem 0 0.25rem;
+}
+
 .offline-prep-progress-track {
     height: 1px;
     overflow: hidden;
@@ -240,13 +252,6 @@ button {
     width: 4.75rem;
 }
 
-.repeat-orb.repeat-orb-awaiting-move {
-    border-color: rgba(255, 255, 255, 0.92);
-    box-shadow:
-        inset 0 1px 0 rgba(255, 255, 255, 0.1),
-        0 0 0 1px rgba(255, 255, 255, 0.14);
-}
-
 .exposure-say-shell {
     min-height: 0;
 }
@@ -270,53 +275,177 @@ button {
 
 .exposure-say-action-zone {
     position: relative;
+    display: flex;
+    align-items: center;
+    justify-content: center;
     min-height: 8.5rem;
     margin-top: 0.35rem;
 }
 
 .exposure-say-orb-wrap {
-    position: absolute;
     touch-action: manipulation;
-}
-
-.exposure-say-orb-wrap.anchor-center {
-    left: 50%;
-    bottom: 12%;
-    transform: translateX(-50%);
-}
-
-.exposure-say-orb-wrap.anchor-left {
-    left: 10%;
-    bottom: 18%;
-}
-
-.exposure-say-orb-wrap.anchor-right {
-    right: 10%;
-    bottom: 18%;
-}
-
-.exposure-say-orb-wrap.anchor-top-left {
-    left: 12%;
-    top: 8%;
-}
-
-.exposure-say-orb-wrap.anchor-top-right {
-    right: 12%;
-    top: 8%;
-}
-
-.exposure-say-orb-wrap.anchor-bottom-left {
-    left: 14%;
-    bottom: 6%;
-}
-
-.exposure-say-orb-wrap.anchor-bottom-right {
-    right: 14%;
-    bottom: 6%;
 }
 
 .exposure-word-choice {
     border-block: 1px solid rgba(214, 181, 109, 0.1);
+}
+
+.verb-family-meaning {
+    margin-bottom: 0.65rem;
+    font-size: 0.95rem;
+    line-height: 1.35;
+    color: rgb(214 211 209);
+    transition:
+        opacity 160ms ease,
+        color 160ms ease;
+}
+
+.verb-family-meaning.is-active {
+    opacity: 1;
+    color: rgb(250 250 249);
+}
+
+.verb-family-meaning.is-dimmed {
+    opacity: 0.34;
+}
+
+.verb-family-paradigm-wrap {
+    display: flex;
+    min-height: 0;
+    flex: 1;
+    align-items: center;
+}
+
+.verb-family-paradigm {
+    direction: rtl;
+    display: grid;
+    width: 100%;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0.45rem;
+}
+
+.verb-family-paradigm.forms-5,
+.verb-family-paradigm.forms-6,
+.verb-family-paradigm[data-form-count="5"],
+.verb-family-paradigm[data-form-count="6"] {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 0.35rem;
+}
+
+.verb-family-paradigm-cell {
+    border: 1px solid rgba(214, 181, 109, 0.12);
+    border-radius: 0.55rem;
+    padding: 0.35rem 0.4rem 0.45rem;
+    opacity: 0.38;
+    transition:
+        opacity 160ms ease,
+        border-color 160ms ease;
+}
+
+.verb-family-paradigm-cell.is-active {
+    opacity: 1;
+    border-color: rgba(214, 181, 109, 0.42);
+}
+
+.verb-family-paradigm-cell.is-complete {
+    opacity: 1;
+}
+
+.verb-family-paradigm-label {
+    margin-bottom: 0.15rem;
+    font-size: 0.72rem;
+    font-weight: 600;
+    line-height: 1.2;
+    color: rgba(214, 181, 109, 0.72);
+}
+
+.verb-family-paradigm-arabic {
+    font-size: 1.15rem;
+    font-weight: 600;
+    line-height: 1.25;
+    color: rgb(232 215 161);
+}
+
+.verb-family-paradigm.forms-5 .verb-family-paradigm-arabic,
+.verb-family-paradigm.forms-6 .verb-family-paradigm-arabic,
+.verb-family-paradigm[data-form-count="5"] .verb-family-paradigm-arabic,
+.verb-family-paradigm[data-form-count="6"] .verb-family-paradigm-arabic {
+    font-size: 0.95rem;
+}
+
+.verb-family-paradigm-english {
+    margin-top: 0.15rem;
+    font-size: 0.68rem;
+    line-height: 1.25;
+    color: rgb(168 162 158);
+}
+
+.verb-family-paradigm.forms-5 .verb-family-paradigm-english,
+.verb-family-paradigm.forms-6 .verb-family-paradigm-english,
+.verb-family-paradigm[data-form-count="5"] .verb-family-paradigm-english,
+.verb-family-paradigm[data-form-count="6"] .verb-family-paradigm-english {
+    font-size: 0.62rem;
+}
+
+.verb-family-paradigm-arabic.is-active,
+.verb-family-paradigm-english.is-active,
+.verb-family-paradigm-image.is-active {
+    opacity: 1;
+    filter: none;
+}
+
+.verb-family-paradigm-arabic.is-dimmed,
+.verb-family-paradigm-english.is-dimmed,
+.verb-family-paradigm-image.is-dimmed {
+    opacity: 0.42;
+    filter: saturate(0.55);
+}
+
+.verb-family-paradigm-image {
+    margin-inline: auto;
+    max-height: 2.75rem;
+    width: auto;
+}
+
+.verb-family-paradigm-test {
+    gap: 0.3rem;
+}
+
+.verb-family-paradigm-test .verb-family-paradigm-cell {
+    padding: 0.28rem 0.32rem 0.34rem;
+}
+
+.verb-family-paradigm-test .verb-family-paradigm-label {
+    margin-bottom: 0.1rem;
+    font-size: 0.62rem;
+}
+
+.verb-family-paradigm-test .verb-family-paradigm-arabic {
+    font-size: 0.92rem;
+    line-height: 1.2;
+}
+
+.verb-family-paradigm-test.forms-5 .verb-family-paradigm-arabic,
+.verb-family-paradigm-test.forms-6 .verb-family-paradigm-arabic,
+.verb-family-paradigm-test[data-form-count="5"] .verb-family-paradigm-arabic,
+.verb-family-paradigm-test[data-form-count="6"] .verb-family-paradigm-arabic {
+    font-size: 0.78rem;
+}
+
+.verb-family-paradigm-test .verb-family-paradigm-image {
+    max-height: 2rem;
+}
+
+.writing-flashcard-answer-zone .verb-family-paradigm-wrap {
+    align-items: stretch;
+}
+
+.writing-flashcard-answer-zone .verb-family-paradigm {
+    text-align: center;
+}
+
+.verb-family-write-header {
+    margin-bottom: 0.35rem;
 }
 
 .exposure-write-shell {
@@ -349,16 +478,27 @@ button {
     -webkit-tap-highlight-color: transparent !important;
 }
 
-.writing-surface p,
-.writing-surface .arabic,
-.writing-surface .exposure-write-cue-text,
-.writing-surface img,
-.writing-surface-host p,
-.writing-surface-host .arabic,
-.writing-surface-host .exposure-write-cue-text,
-.writing-surface-host img {
+.writing-surface-host ::selection,
+.writing-surface ::selection {
+    background: transparent;
+    color: inherit;
+}
+
+.writing-cue-copy,
+.writing-surface .arabic.writing-cue-copy,
+.writing-surface-host .arabic.writing-cue-copy {
     -webkit-user-modify: read-only;
     pointer-events: none;
+    -webkit-user-select: none;
+    user-select: none;
+    -webkit-touch-callout: none;
+}
+
+.writing-surface-action {
+    pointer-events: auto;
+    touch-action: manipulation;
+    -webkit-user-select: none;
+    user-select: none;
 }
 
 .exposure-write-cue {
@@ -412,6 +552,7 @@ button {
     overflow-anchor: none;
     -webkit-overflow-scrolling: touch;
     overscroll-behavior: contain;
+    touch-action: none;
     -webkit-user-select: none;
     user-select: none;
     -webkit-touch-callout: none;
@@ -435,6 +576,7 @@ button {
     flex-direction: column;
     gap: 0.45rem;
     padding-block: 0.35rem 0.5rem;
+    touch-action: none;
 }
 
 .writing-strip-canvas {
@@ -652,6 +794,18 @@ button {
 .match-card-visible {
     border-color: rgba(232, 215, 161, 0.42);
     background: rgba(214, 181, 109, 0.08);
+}
+
+.match-card-facedown {
+    border-color: rgba(214, 181, 109, 0.16);
+    background: linear-gradient(145deg, rgba(214, 181, 109, 0.07), rgba(7, 19, 15, 0.96));
+    color: rgba(232, 215, 161, 0.24);
+}
+
+.match-card-back {
+    font-size: 1.1rem;
+    font-weight: 600;
+    letter-spacing: 0.18em;
 }
 
 .match-card-compact {

@@ -1,7 +1,40 @@
+# Dependencies
 node_modules/
+
+# Build output
 dist/
+build/
 *.tsbuildinfo
+
+# Vite / tooling caches
+.vite/
+.vite-cache/
+.turbo/
+.cache/
+
+# Test output
+coverage/
+test-results/
+playwright-report/
+blob-report/
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Environment / local secrets
+.env
+.env.*
+!.env.example
+!.env.*.example
+
+# OS files
 .DS_Store
+Thumbs.db
 
 # Local vocabulary backups (not needed in repo)
 vocabulary_before_*/
@@ -11,3 +44,7 @@ extracted_vocabulary_raw_pdf_extract_backup/
 .cursor/
 .agents/
 agent-transcripts/
+.idea/
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json

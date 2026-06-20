@@ -83,6 +83,44 @@ const sanitizePhraseArabic = (text: string) => {
   return cleaned || text;
 };
 
+/** Strip harakat and spacing so phrase rows can be compared reliably. */
+const normalizePhraseArabicKey = (text: string) =>
+  text.replace(/[\s\u0640\u200c\u200d\u0610-\u061A\u064B-\u065F\u0670\u06D6-\u06ED]/g, "");
+
+/** PDF phrase tables often export the expression and example sentence as separate rows with the same English gloss. */
+const isPhraseExampleRow = (expressionArabic: string, rowArabic: string) => {
+  const expression = normalizePhraseArabicKey(expressionArabic);
+  const current = normalizePhraseArabicKey(rowArabic);
+  if (!expression || !current) return false;
+
+  const containsExpression = expression.length >= 2 && current.includes(expression) && current.length > expression.length;
+  const muchLonger = current.length >= Math.max(expression.length + 6, expression.length * 2);
+  return containsExpression || muchLonger;
+};
+
+const parsePhraseRows = (rows: CsvRow[], lessonId: string) => {
+  const phrases: Lesson["phrases"] = [];
+
+  for (const row of rows) {
+    if (!row.arabic && !row.english) continue;
+
+    const previous = phrases.at(-1);
+    if (previous && row.english === previous.english && isPhraseExampleRow(previous.arabic, row.arabic)) {
+      continue;
+    }
+
+    phrases.push({
+      id: `${lessonId}-phrase-${phrases.length + 1}`,
+      arabic: sanitizePhraseArabic(row.arabic),
+      arabicImage: row.arabic_image || undefined,
+      english: row.english,
+      hard: parseBool(row.hard),
+    });
+  }
+
+  return phrases;
+};
+
 const verbHardColumns: Array<{ key: VerbFormKey; hard: string }> = [
   { key: "past", hard: "past_hard" },
   { key: "present", hard: "present_hard" },
@@ -127,7 +165,7 @@ const makeBatchSteps = ({
   batchSize: number;
 }) => makeSectionBatchSteps({ lessonId, title, section, batchSizes: getBatchSizes(count, batchSize, section !== "verbs") });
 
-const getSectionUnitLabel = (section: SectionKind) => (section === "verbs" ? "Family" : "Batch");
+const getSectionUnitLabel = (_section: SectionKind) => "Batch";
 
 const makeSectionBatchSteps = ({
   lessonId,
@@ -240,7 +278,6 @@ const makeSteps = ({ lessonId, nouns, verbs, phraseCount }: { lessonId: string; 
       title: "Verb",
       section: "verbs",
       batchSizes: verbBatches.map((batch) => batch.length),
-      batchItemCounts: verbBatches.map((batch) => countVerbFamilyForms(batch[0]!)),
     }),
   );
   if (verbCount > 0) {
@@ -302,15 +339,7 @@ export const lessons: Lesson[] = Object.values(byLesson)
         };
       });
 
-    const phrases = (lessonCsv.phrases ?? [])
-      .filter((row) => row.arabic || row.english)
-      .map((row, index) => ({
-        id: `${lessonId}-phrase-${index + 1}`,
-        arabic: sanitizePhraseArabic(row.arabic),
-        arabicImage: row.arabic_image || undefined,
-        english: row.english,
-        hard: parseBool(row.hard),
-      }));
+    const phrases = parsePhraseRows(lessonCsv.phrases ?? [], lessonId);
 
     const verbs = (lessonCsv.verbs ?? [])
       .filter((row) => row.past_arabic || row.present_arabic || row.command_arabic || row.masdar_arabic)

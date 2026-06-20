@@ -3,6 +3,7 @@ import {
   getBatchExposureCards,
   getCachedLessonExposureCards,
   getSectionExposureCards,
+  prepareVerbBatchReviewTestCards,
 } from "./exposure-cards";
 import type { ReviewableCard } from "./review";
 import {
@@ -12,6 +13,14 @@ import {
   type WritingQueueConfig,
 } from "./study-queue";
 import type { ExposureCard, Lesson, LessonStep, SectionKind } from "./types";
+
+export type WritingTestCardPrep = {
+  cards: ExposureCard[];
+  familyFormsByCardId: Map<string, ExposureCard[]>;
+};
+
+export const usesVerbFamilyWritingTest = (step: LessonStep | undefined) =>
+  step?.section === "verbs" && (step.kind === "batch-review" || step.kind === "vocabulary-test");
 
 export const toReviewableCard =
   (lessonId: string) =>
@@ -67,4 +76,20 @@ export const getWritingStudyCardsForStep = (lesson: Lesson, stepId: string) => {
   if (step?.kind === "batch-review") return getBatchExposureCards(lesson, stepId);
   const section = getVocabularyTestSection(stepId);
   return section ? getSectionExposureCards(lesson, section) : [];
+};
+
+export const prepareWritingTestCardsForStep = (lesson: Lesson, stepId: string): WritingTestCardPrep => {
+  const step = lesson.steps.find((item) => item.id === stepId);
+  const cards = getWritingStudyCardsForStep(lesson, stepId);
+  if (usesVerbFamilyWritingTest(step)) {
+    return prepareVerbBatchReviewTestCards(cards);
+  }
+  return { cards, familyFormsByCardId: new Map() };
+};
+
+/** Per-form cards for the writing-test phase at the end of a single batch. */
+export const getWithinBatchWritingTestCards = (lesson: Lesson, stepId: string) => {
+  const step = lesson.steps.find((item) => item.id === stepId);
+  if (step?.kind !== "batch") return [];
+  return getBatchExposureCards(lesson, stepId);
 };

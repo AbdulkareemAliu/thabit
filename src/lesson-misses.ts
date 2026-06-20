@@ -1,3 +1,4 @@
+import type { ExposureCard } from "./types";
 import type { CueSide } from "./study-queue";
 
 const storageKey = (lessonId: string) => `thabit.lessonMissedCues.${lessonId}`;
@@ -25,9 +26,31 @@ export const recordLessonMiss = (lessonId: string, cardId: string, cueSide: CueS
   writeMissedCues(lessonId, missed);
 };
 
+export const recordLessonFamilyMiss = (lessonId: string, card: ExposureCard, cueSide: CueSide, familyForms?: ExposureCard[]) => {
+  if (familyForms?.length) {
+    familyForms.forEach((form) => recordLessonMiss(lessonId, form.id, cueSide));
+    return;
+  }
+  recordLessonMiss(lessonId, card.id, cueSide);
+};
+
 export const getLessonMissedCuePasses = (lessonId: string, cardId: string, cueSide: CueSide, defaultPasses = 1) => {
   const missed = readMissedCues(lessonId);
   return missed[cardId]?.[cueSide] ? 2 : defaultPasses;
+};
+
+export const getLessonMissedFamilyCuePasses = (
+  lessonId: string,
+  card: ExposureCard,
+  cueSide: CueSide,
+  familyForms?: ExposureCard[],
+  defaultPasses = 1,
+) => {
+  if (familyForms?.length) {
+    const missed = readMissedCues(lessonId);
+    return familyForms.some((form) => missed[form.id]?.[cueSide]) ? 2 : defaultPasses;
+  }
+  return getLessonMissedCuePasses(lessonId, card.id, cueSide, defaultPasses);
 };
 
 export const clearLessonMisses = (lessonId: string) => {

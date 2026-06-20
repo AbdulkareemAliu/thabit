@@ -13,31 +13,215 @@ const stripVerbFormSuffix = (english: string) => english.replace(/\s*\([^)]*\)\s
 
 export const normalizeVerbFormEnglish = (english: string) => english.replace(/ \+ m(?=\))/g, "");
 
-export const getVerbFormEnglish = (verb: VerbFamily, form: VerbFormKey) => {
-  const direct = verb.englishByForm?.[form]?.trim();
-  if (direct) return normalizeVerbFormEnglish(direct);
-
-  if (form === "activeParticiple") {
-    return `${stripVerbFormSuffix(normalizeVerbFormEnglish(verb.meaning))} (ism fa'il)`;
-  }
-
-  return normalizeVerbFormEnglish(verb.meaning);
+export const formatVerbFormEnglishLabel = (english: string, form: VerbFormKey) => {
+  const stem = stripVerbFormSuffix(normalizeVerbFormEnglish(english.trim()));
+  if (!stem) return VERB_FORM_ARABIC_LABELS[form];
+  return `${stem} (${VERB_FORM_ARABIC_LABELS[form]})`;
 };
 
-const VERB_FORM_SPECS = [
-  { key: "past" as const, label: "Past" },
-  { key: "present" as const, label: "Present" },
-  { key: "command" as const, label: "Command" },
-  { key: "masdar" as const, label: "Masdar" },
-  { key: "passive" as const, label: "Passive" },
-  { key: "activeParticiple" as const, label: "Ism Fa'il" },
-] as const;
+export const getVerbFormEnglish = (verb: VerbFamily, form: VerbFormKey) => {
+  const direct = verb.englishByForm?.[form]?.trim();
+  if (direct) return formatVerbFormEnglishLabel(direct, form);
+  return formatVerbFormEnglishLabel(verb.meaning, form);
+};
 
-export const getVerbFormLabel = (form: VerbFormKey) =>
-  VERB_FORM_SPECS.find((spec) => spec.key === form)?.label ?? form;
+export const VERB_FORM_ARABIC_LABELS: Record<VerbFormKey, string> = {
+  past: "الماضي",
+  present: "المضارع",
+  command: "الأمر",
+  masdar: "المصدر",
+  passive: "المجهول",
+  activeParticiple: "اسم فاعل",
+};
+
+const VERB_FORM_SPECS = (Object.keys(VERB_FORM_ARABIC_LABELS) as VerbFormKey[]).map((key) => ({
+  key,
+  label: VERB_FORM_ARABIC_LABELS[key],
+}));
+
+/** Canonical verb form order within a family (past → active participle). */
+export const VERB_FORM_ORDER: VerbFormKey[] = VERB_FORM_SPECS.map(({ key }) => key);
+
+const LEGACY_VERB_FORM_LABELS: Record<string, VerbFormKey> = {
+  Past: "past",
+  Present: "present",
+  Command: "command",
+  Masdar: "masdar",
+  Passive: "passive",
+  "Ism Fa'il": "activeParticiple",
+  "Active Participle": "activeParticiple",
+};
+
+export const resolveVerbFormKeyFromLabel = (label: string): VerbFormKey | undefined =>
+  VERB_FORM_SPECS.find((spec) => spec.label === label)?.key ?? LEGACY_VERB_FORM_LABELS[label];
+
+export const getVerbFormLabel = (form: VerbFormKey) => VERB_FORM_ARABIC_LABELS[form] ?? form;
 
 export const countVerbFamilyForms = (verb: VerbFamily): number =>
   VERB_FORM_SPECS.filter(({ key }) => typeof verb[key] === "string" && verb[key]).length;
+
+const VERB_FORM_SUFFIX_PATTERN = /-(past|present|command|masdar|passive|activeParticiple)$/;
+
+export const getVerbFamilyIdFromCardId = (cardId: string) => cardId.replace(VERB_FORM_SUFFIX_PATTERN, "");
+
+export const getVerbFamilyBrowseMeaning = (verb: VerbFamily) => stripVerbFormSuffix(normalizeVerbFormEnglish(verb.meaning));
+
+export const getVerbFamilyMeaningLabel = (forms: ExposureCard[]) => {
+  const english = forms[0]?.english?.trim();
+  return english ? stripVerbFormSuffix(english) : "";
+};
+
+export const getVerbFamilyFormsForCard = (allCards: ExposureCard[], card: ExposureCard): ExposureCard[] | null => {
+  if (card.section !== "verbs") return null;
+  const familyId = getVerbFamilyIdFromCardId(card.id);
+  const familyCards = allCards.filter(
+    (item) => item.section === "verbs" && getVerbFamilyIdFromCardId(item.id) === familyId,
+  );
+  const forms = VERB_FORM_SPECS.flatMap(({ key }) => {
+    const formCard = familyCards.find((item) => item.id.endsWith(`-${key}`));
+    return formCard ? [formCard] : [];
+  });
+  return forms.length > 0 ? forms : null;
+};
+
+export type VerbFamilyTestPrep = {
+  cards: ExposureCard[];
+  familyFormsByCardId: Map<string, ExposureCard[]>;
+};
+
+const buildVerbFamilyTestUnits = (verbCards: ExposureCard[], pool: ExposureCard[]): VerbFamilyTestPrep => {
+  const familyIds = [...new Set(verbCards.map((card) => getVerbFamilyIdFromCardId(card.id)))];
+  const cards: ExposureCard[] = [];
+  const familyFormsByCardId = new Map<string, ExposureCard[]>();
+
+  for (const familyId of familyIds) {
+    const forms = VERB_FORM_SPECS.flatMap(({ key }) => {
+      const formCard = pool.find(
+        (item) => item.section === "verbs" && getVerbFamilyIdFromCardId(item.id) === familyId && item.id.endsWith(`-${key}`),
+      );
+      return formCard ? [formCard] : [];
+    });
+    if (forms.length === 0) continue;
+    const representative = forms[0]!;
+    cards.push(representative);
+    familyFormsByCardId.set(representative.id, forms);
+  }
+
+  return { cards, familyFormsByCardId };
+};
+
+export const prepareVerbSectionTestCards = (cards: ExposureCard[]): VerbFamilyTestPrep =>
+  buildVerbFamilyTestUnits(
+    cards.filter((card) => card.section === "verbs"),
+    cards,
+  );
+
+/** Collapse verb cards to one family prompt each — used for batch-review and section tests. */
+export const prepareVerbBatchReviewTestCards = (cards: ExposureCard[]): VerbFamilyTestPrep =>
+  prepareVerbSectionTestCards(cards);
+
+export const prepareLessonTestWritingCards = (cards: ExposureCard[]): VerbFamilyTestPrep => {
+  const nonVerbs = cards.filter((card) => card.section !== "verbs");
+  const verbPrep = buildVerbFamilyTestUnits(
+    cards.filter((card) => card.section === "verbs"),
+    cards,
+  );
+  return {
+    cards: [...nonVerbs, ...verbPrep.cards],
+    familyFormsByCardId: verbPrep.familyFormsByCardId,
+  };
+};
+
+export const groupExposureCardsIntoVerbFamilies = (cards: ExposureCard[]): ExposureCard[][] => {
+  const families = new Map<string, ExposureCard[]>();
+  const order: string[] = [];
+
+  for (const card of cards) {
+    const familyId = getVerbFamilyIdFromCardId(card.id);
+    if (!families.has(familyId)) {
+      families.set(familyId, []);
+      order.push(familyId);
+    }
+    families.get(familyId)!.push(card);
+  }
+
+  return order.map((familyId) => {
+    const familyCards = families.get(familyId) ?? [];
+    return VERB_FORM_SPECS.flatMap(({ key }) => {
+      const card = familyCards.find((item) => item.id.endsWith(`-${key}`));
+      return card ? [card] : [];
+    });
+  });
+};
+
+const getFormCardInFamily = (family: ExposureCard[], formKey: VerbFormKey) =>
+  family.find((card) => card.id.endsWith(`-${formKey}`));
+
+const pickVerbFormKeyForFamily = (family: ExposureCard[]): VerbFormKey | null => {
+  for (const key of VERB_FORM_ORDER) {
+    if (getFormCardInFamily(family, key)) return key;
+  }
+  return null;
+};
+
+const pickSharedVerbFormKey = (families: ExposureCard[][]): VerbFormKey | null => {
+  for (const key of VERB_FORM_ORDER) {
+    if (families.every((family) => Boolean(getFormCardInFamily(family, key)))) return key;
+  }
+  return null;
+};
+
+export const getVerbEnglishRecognitionLabel = (family: ExposureCard[], formCard: ExposureCard) => {
+  const meaning = getVerbFamilyMeaningLabel(family);
+  const formKeyMatch = formCard.id.match(/-(past|present|command|masdar|passive|activeParticiple)$/);
+  const formLabel = formCard.label ?? getVerbFormLabel((formKeyMatch?.[1] ?? "past") as VerbFormKey);
+  return meaning ? `${meaning} · ${formLabel}` : formLabel;
+};
+
+export type VerbBatchRecognition = {
+  cards: ExposureCard[];
+  englishLabelsByFamilyId: Map<string, string>;
+  sharedFormKey: VerbFormKey | null;
+};
+
+export const prepareVerbBatchRecognition = (cards: ExposureCard[]): VerbBatchRecognition | null => {
+  if (cards.length === 0 || cards[0]?.section !== "verbs") return null;
+
+  const families = groupExposureCardsIntoVerbFamilies(cards);
+  const sharedFormKey = pickSharedVerbFormKey(families);
+  const recognitionCards: ExposureCard[] = [];
+  const englishLabelsByFamilyId = new Map<string, string>();
+
+  for (const family of families) {
+    const formKey = sharedFormKey ?? pickVerbFormKeyForFamily(family);
+    if (!formKey) continue;
+    const formCard = getFormCardInFamily(family, formKey);
+    if (!formCard) continue;
+    const familyId = getVerbFamilyIdFromCardId(formCard.id);
+    recognitionCards.push(formCard);
+    englishLabelsByFamilyId.set(familyId, getVerbEnglishRecognitionLabel(family, formCard));
+  }
+
+  return { cards: recognitionCards, englishLabelsByFamilyId, sharedFormKey };
+};
+
+export const getLessonVerbRecognitionCards = (lessonCards: ExposureCard[]): ExposureCard[] => {
+  const verbCards = lessonCards.filter((card) => card.section === "verbs");
+  if (verbCards.length === 0) return [];
+
+  const families = groupExposureCardsIntoVerbFamilies(verbCards);
+  return families.flatMap((family) => {
+    const formKey = pickVerbFormKeyForFamily(family);
+    if (!formKey) return [];
+    const formCard = getFormCardInFamily(family, formKey);
+    return formCard ? [formCard] : [];
+  });
+};
+
+export const getBatchRecognitionCards = (cards: ExposureCard[]) =>
+  prepareVerbBatchRecognition(cards)?.cards ?? cards;
+
+export const getBatchRecognitionCount = (cards: ExposureCard[]) => getBatchRecognitionCards(cards).length;
 
 const verbFamilyToExposureCards = (
   verb: VerbFamily,

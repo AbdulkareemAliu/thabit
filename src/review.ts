@@ -1,12 +1,13 @@
-import { PREREQUISITE_REVIEWED_LESSON_NUMBERS, REVIEW_MAX_INTERVAL_DAYS, REVIEW_NEW_CARD_STAGGER_DAYS } from "./config";
+import { resolveVerbFormKeyFromLabel } from "./exposure-cards";
+import { REVIEW_MAX_INTERVAL_DAYS, REVIEW_NEW_CARD_STAGGER_DAYS } from "./config";
 import { isLessonComplete } from "./progress";
 import { shuffle } from "./shuffle";
 import { addDays, todayKey } from "./today";
 import type { Lesson, SectionKind, VerbFormKey } from "./types";
 
 export const REVIEW_STORAGE_KEY = "thabit.reviewCards";
-const PREREQUISITE_REVIEW_CREDIT_MIGRATION_KEY = "thabit.migration.creditReviewL1L2_v1";
 const STAGGERED_REVIEW_SCHEDULE_MIGRATION_KEY = "thabit.migration.staggeredReviewSchedule_v1";
+const SHORTER_NEW_CARD_STAGGER_MIGRATION_KEY = "thabit.migration.shorterNewCardStagger_v3";
 export const MAX_INTERVAL_DAYS = REVIEW_MAX_INTERVAL_DAYS;
 const DEFAULT_EASE = 2.5;
 const HARD_EASE = 2.3;
@@ -38,15 +39,7 @@ export type DailyReviewStats = {
   newCount: number;
 };
 
-const labelToVerbForm: Record<string, VerbFormKey> = {
-  Past: "past",
-  Present: "present",
-  Command: "command",
-  Masdar: "masdar",
-  Passive: "passive",
-  "Ism Fa'il": "activeParticiple",
-  "Active Participle": "activeParticiple",
-};
+const labelToVerbForm = (label: string) => resolveVerbFormKeyFromLabel(label);
 
 const readReviewCards = (): Record<string, ReviewCardRecord> => {
   try {
@@ -75,7 +68,7 @@ const isCardHard = (card: ReviewableCard, lesson: Lesson) => {
   if (card.section === "phrases") return lesson.phrases.some((item) => item.id === card.id && item.hard);
   const verb = lesson.verbs.find((item) => card.id.startsWith(`${item.id}-`));
   if (!verb || !card.label) return false;
-  const form = labelToVerbForm[card.label];
+  const form = labelToVerbForm(card.label);
   return form ? Boolean(verb.hardForms?.[form]) : false;
 };
 
@@ -90,42 +83,6 @@ const seedReviewCard = (card: ReviewableCard, lesson: Lesson, today: string, sta
   lapses: 0,
 });
 
-const isPrerequisiteReviewedLesson = (lesson: Lesson) => PREREQUISITE_REVIEWED_LESSON_NUMBERS.includes(lesson.number);
-
-const creditReviewedToday = (record: ReviewCardRecord, today: string, startOffsetDays = 0): ReviewCardRecord => {
-  const intervalDays = record.intervalDays > 0 ? capInterval(record.intervalDays) : 7;
-  return {
-    ...record,
-    state: "review",
-    learningStep: 0,
-    intervalDays,
-    dueAt: addDays(today, intervalDays + startOffsetDays),
-    lastReviewedAt: today,
-  };
-};
-
-const creditPrerequisiteLessonCards = (allLessons: Lesson[], getCardsForLesson: (lesson: Lesson) => ReviewableCard[], today: string, cards: Record<string, ReviewCardRecord>) => {
-  let changed = false;
-
-  for (const lesson of allLessons) {
-    if (!isPrerequisiteReviewedLesson(lesson)) continue;
-
-    const lessonCards = getCardsForLesson(lesson);
-    lessonCards.forEach((card, index) => {
-      const existing = cards[card.id];
-      const startOffsetDays = staggerOffsetDays(index, lessonCards.length);
-      const record = existing ?? seedReviewCard({ ...card, lessonId: lesson.id }, lesson, today, startOffsetDays);
-      const credited = creditReviewedToday(record, today, startOffsetDays);
-      if (!existing || existing.dueAt !== credited.dueAt || existing.lastReviewedAt !== credited.lastReviewedAt || existing.state !== credited.state) {
-        cards[card.id] = credited;
-        changed = true;
-      }
-    });
-  }
-
-  return changed;
-};
-
 /** One-time reset so existing users pick up staggered seeding and the 30-day max interval. */
 export const applyStaggeredReviewScheduleMigration = () => {
   if (window.localStorage.getItem(STAGGERED_REVIEW_SCHEDULE_MIGRATION_KEY)) return;
@@ -134,14 +91,34 @@ export const applyStaggeredReviewScheduleMigration = () => {
   window.localStorage.setItem(STAGGERED_REVIEW_SCHEDULE_MIGRATION_KEY, "1");
 };
 
-export const applyPrerequisiteReviewCreditMigration = (allLessons: Lesson[], getCardsForLesson: (lesson: Lesson) => ReviewableCard[]) => {
-  if (window.localStorage.getItem(PREREQUISITE_REVIEW_CREDIT_MIGRATION_KEY)) return;
+/** Re-stagger cards still in the new state using the shorter spread window. */
+export const applyShorterNewCardStaggerMigration = (
+  allLessons: Lesson[],
+  completedStepIds: string[],
+  getCardsForLesson: (lesson: Lesson) => ReviewableCard[],
+) => {
+  if (window.localStorage.getItem(SHORTER_NEW_CARD_STAGGER_MIGRATION_KEY)) return;
 
   const today = todayKey();
   const cards = readReviewCards();
-  const changed = creditPrerequisiteLessonCards(allLessons, getCardsForLesson, today, cards);
+  let changed = false;
 
-  window.localStorage.setItem(PREREQUISITE_REVIEW_CREDIT_MIGRATION_KEY, "1");
+  for (const lesson of allLessons) {
+    if (!isLessonReviewEligible(lesson, completedStepIds)) continue;
+
+    const lessonCards = getCardsForLesson(lesson);
+    const newCards = lessonCards.filter((card) => cards[card.id]?.state === "new");
+    newCards.forEach((card, index) => {
+      const record = cards[card.id]!;
+      const dueAt = addDays(today, staggerOffsetDays(index, newCards.length));
+      if (record.dueAt !== dueAt) {
+        cards[card.id] = { ...record, dueAt };
+        changed = true;
+      }
+    });
+  }
+
+  window.localStorage.setItem(SHORTER_NEW_CARD_STAGGER_MIGRATION_KEY, "1");
   if (changed) writeReviewCards(cards);
 };
 
@@ -158,7 +135,7 @@ export const syncReviewPool = (allLessons: Lesson[], completedStepIds: string[],
     missingCards.forEach((card, index) => {
       const startOffsetDays = staggerOffsetDays(index, missingCards.length);
       const seeded = seedReviewCard({ ...card, lessonId: lesson.id }, lesson, today, startOffsetDays);
-      cards[card.id] = isPrerequisiteReviewedLesson(lesson) ? creditReviewedToday(seeded, today, startOffsetDays) : seeded;
+      cards[card.id] = seeded;
       changed = true;
     });
   }

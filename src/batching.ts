@@ -1,4 +1,4 @@
-import { MIN_NON_VERB_BATCH_SIZE, NOUN_BATCH_SIZE } from "./config";
+import { MIN_NON_VERB_BATCH_SIZE, NOUN_BATCH_SIZE, VERB_BATCH_SIZE } from "./config";
 import type { NounItem, VerbFamily } from "./types";
 
 export const normalizeEnglishTag = (tag: string): string => {
@@ -95,4 +95,9 @@ export const getNounBatches = (nouns: NounItem[]): NounItem[][] => {
   return packUnitsIntoBatches(units, NOUN_BATCH_SIZE, true);
 };
 
-export const getVerbBatches = (verbs: VerbFamily[]): VerbFamily[][] => verbs.map((verb) => [verb]);
+export const getVerbBatches = (verbs: VerbFamily[]): VerbFamily[][] =>
+  packUnitsIntoBatches(
+    verbs.map((verb) => [verb]),
+    VERB_BATCH_SIZE,
+    true,
+  );
