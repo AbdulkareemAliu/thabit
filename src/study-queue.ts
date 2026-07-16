@@ -27,6 +27,10 @@ export type StudyPrompt = {
   passesRemaining: number;
   passesRequired: number;
   verbFamilyForms?: ExposureCard[];
+  /** Daily-review records graded together for one exact English cue. */
+  dailyReviewCardIds?: string[];
+  /** Every Arabic answer accepted for a grouped daily-review cue. */
+  dailyReviewAnswerCards?: ExposureCard[];
   /** One sequential write prompt per verb form (family still tested together). */
   verbFamilyFormPart?: boolean;
   verbFamilyFormIndex?: number;
@@ -253,31 +257,67 @@ export const DAILY_REVIEW_WRITING_CONFIG: WritingQueueConfig = {
   passesForCue: () => 1,
 };
 
+export const getDailyReviewEnglishKey = (lessonId: string, card: ExposureCard) =>
+  `${lessonId}:${card.english.trim().toLocaleLowerCase()}`;
+
 export const buildDailyReviewFlashcardQueue = (
-  reviewQueue: { id: string }[],
+  reviewQueue: { id: string; lessonId: string }[],
   prep: {
     cards: ExposureCard[];
     familyFormsByCardId: Map<string, ExposureCard[]>;
+    dailyReviewAnswerCardsByKey?: Map<string, ExposureCard[]>;
   },
 ): StudyPrompt[] => {
   const cardById = new Map(prep.cards.map((card) => [card.id, card]));
-  const prompts: StudyPrompt[] = [];
+  const groups = new Map<
+    string,
+    {
+      card: ExposureCard;
+      reviewCardIds: string[];
+      answerCards: ExposureCard[];
+      englishKey: string;
+    }
+  >();
 
   for (const reviewCard of reviewQueue) {
     const card = cardById.get(reviewCard.id);
     if (!card) continue;
 
-    prompts.push({
+    // Exact display meanings only: tags such as "(P)" stay distinct.
+    const key = getDailyReviewEnglishKey(reviewCard.lessonId, card);
+    const group = groups.get(key);
+    const answerCards = prep.familyFormsByCardId.get(card.id) ?? [card];
+
+    if (group) {
+      group.reviewCardIds.push(reviewCard.id);
+      group.answerCards.push(...answerCards);
+    } else {
+      groups.set(key, {
+        card,
+        reviewCardIds: [reviewCard.id],
+        answerCards: [...answerCards],
+        englishKey: key,
+      });
+    }
+  }
+
+  return shuffle(
+    [...groups.values()].map(({ card, reviewCardIds, answerCards, englishKey }): StudyPrompt => ({
       card,
       cueSide: "english",
       passesRemaining: 1,
       passesRequired: 1,
-      verbFamilyForms: prep.familyFormsByCardId.get(card.id) ?? [card],
-    });
-  }
-
-  return shuffle(prompts);
+      dailyReviewCardIds: reviewCardIds,
+      dailyReviewAnswerCards: prep.dailyReviewAnswerCardsByKey?.get(englishKey) ?? answerCards,
+    })),
+  );
 };
+
+export const getDailyReviewPromptCardIds = (prompt: StudyPrompt) =>
+  prompt.dailyReviewCardIds?.length ? prompt.dailyReviewCardIds : [getVerbFamilyWritingReviewCardId(prompt)];
+
+export const getDailyReviewPromptAnswerCards = (prompt: StudyPrompt) =>
+  prompt.dailyReviewAnswerCards?.length ? prompt.dailyReviewAnswerCards : prompt.verbFamilyForms?.length ? prompt.verbFamilyForms : [prompt.card];
 
 const resolveWritingTestPrep = (cards: ExposureCard[], familyFormsByCardId?: Map<string, ExposureCard[]>) => {
   if (cards.length > 0 && familyFormsByCardId?.size) {

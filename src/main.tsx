@@ -91,7 +91,8 @@ import {
   getArabicAnswer,
   getMultipleChoiceAnswerKey,
   getMultipleChoiceArabicOptionKey,
-  getVerbFamilyWritingReviewCardId,
+  getDailyReviewPromptAnswerCards,
+  getDailyReviewPromptCardIds,
   isFirstVerbFamilyFormPart,
   isLastVerbFamilyFormPart,
   getVerbFamilyFormPartIndex,
@@ -1859,6 +1860,7 @@ function FlashcardStudyPanel({ prompt: e, isRevealed: t, onReveal: n, onAdvance:
   let { card: i, cueSide: a, verbFamilyForms: o } = e,
     s = a === `arabic` ? `english` : `arabic`,
     familyForms = o?.length ? o : null,
+    dailyReviewAnswers = e.dailyReviewAnswerCards?.length ? e.dailyReviewAnswerCards : null,
     [u, d] = useState(!1);
   return (
     useEffect(() => {
@@ -1875,6 +1877,8 @@ function FlashcardStudyPanel({ prompt: e, isRevealed: t, onReveal: n, onAdvance:
                   <div className={`shrink-0`}>
                     {a === `arabic` ? (
                       <ArabicCardFace card={i} className={`writing-cue-copy`} />
+                    ) : dailyReviewAnswers ? (
+                      <EnglishCue card={{ ...i, englishVariant: undefined, englishVariantTotal: undefined }} className={`writing-cue-copy mx-auto`} showImageHint={!1} />
                     ) : familyForms && familyForms.length > 1 ? (
                       <div className={`writing-cue-copy text-2xl font-semibold text-stone-100`}>{getFamilyMeaningLabel(familyForms)}</div>
                     ) : (
@@ -1889,6 +1893,14 @@ function FlashcardStudyPanel({ prompt: e, isRevealed: t, onReveal: n, onAdvance:
                       <div className={`mt-3`}>
                         {a === `arabic` ? (
                           <p className={`text-lg text-stone-300`}>{i.english}</p>
+                        ) : dailyReviewAnswers && dailyReviewAnswers.length > 1 ? (
+                          <div className={`grid grid-cols-2 gap-3`} dir={`rtl`}>
+                            {dailyReviewAnswers.map((card) => (
+                              <ArabicCardFace key={card.id} card={card} />
+                            ))}
+                          </div>
+                        ) : dailyReviewAnswers ? (
+                          <ArabicCardFace card={dailyReviewAnswers[0]!} />
                         ) : familyForms && familyForms.length > 1 ? (
                           <VerbFamilyParadigmGrid forms={familyForms} activeFormIndex={-1} compact />
                         ) : (
@@ -3069,7 +3081,7 @@ function DailyReviewScreen({ completedStepIds: e, onRecordStudyDay: t, onNavigat
     [v, y] = useState(0),
     [b, x] = useState(0),
     studyPrep = useMemo(() => prepareDailyReviewStudyCards(reviewQueue), [reviewQueue]),
-    S = useMemo(() => writingTestFamilyTotal(studyPrep.cards, studyPrep.familyFormsByCardId), [studyPrep.cards, studyPrep.familyFormsByCardId]);
+    S = useMemo(() => buildDailyReviewFlashcardQueue(reviewQueue, studyPrep).length, [reviewQueue, studyPrep]);
   useEffect(() => {
     (o(!0), c(`intro`), d([]), p([]), h([]), _(!1), y(0), x(0));
     let t = window.setTimeout(() => {
@@ -3096,13 +3108,18 @@ function DailyReviewScreen({ completedStepIds: e, onRecordStudyDay: t, onNavigat
       (v > 0 && t(), c(`complete`));
     },
     O = (e) => {
-      let t = e.filter((e, t, n) => n.findIndex((t) => t.id === e.id) === t);
+      let t = e.filter(
+        (prompt, index, prompts) =>
+          prompts.findIndex((candidate) => getDailyReviewPromptCardIds(candidate).join(`:`) === getDailyReviewPromptCardIds(prompt).join(`:`)) === index,
+      );
       if (t.length === 0) {
         D();
         return;
       }
-      let n = prepareDailyReviewStudyCards(reviewQueue.filter((n) => t.some((e) => e.id === n.id)));
-      (p(buildDailyReviewFlashcardQueue(reviewQueue.filter((n) => t.some((e) => e.id === n.id)), n)), c(`replay`), _(!1), setSayLoopForms(null));
+      let n = new Set(t.flatMap(getDailyReviewPromptCardIds)),
+        a = reviewQueue.filter((card) => n.has(card.id)),
+        o = prepareDailyReviewStudyCards(a);
+      (p(buildDailyReviewFlashcardQueue(a, o)), c(`replay`), _(!1), setSayLoopForms(null));
     },
     finishFamilySayLoop = () => {
       (setSayLoopForms(null), _(!1));
@@ -3122,9 +3139,9 @@ function DailyReviewScreen({ completedStepIds: e, onRecordStudyDay: t, onNavigat
       });
     },
     advanceReview = (wasCorrect, prompt) => {
-      let reviewCardId = getVerbFamilyWritingReviewCardId(prompt);
+      let reviewCardIds = getDailyReviewPromptCardIds(prompt);
       if (s !== `replay`) {
-        gradeDailyReviewPrompt(reviewCardId, wasCorrect);
+        reviewCardIds.forEach((cardId) => gradeDailyReviewPrompt(cardId, wasCorrect));
         wasCorrect ? y((count) => count + 1) : x((count) => count + 1);
       }
       _(!1);
@@ -3136,8 +3153,8 @@ function DailyReviewScreen({ completedStepIds: e, onRecordStudyDay: t, onNavigat
         return;
       }
       h((missed) => {
-        let reviewCard = studyPrep.cards.find((card) => card.id === reviewCardId) ?? prompt.card,
-          nextMissed = !wasCorrect && !missed.some((card) => card.id === reviewCard.id) ? [...missed, reviewCard] : missed;
+        let promptKey = reviewCardIds.join(`:`),
+          nextMissed = !wasCorrect && !missed.some((item) => getDailyReviewPromptCardIds(item).join(`:`) === promptKey) ? [...missed, prompt] : missed;
         return (
           d((queue) => {
             let next = advanceStudyPromptQueue(queue, wasCorrect);
@@ -3194,13 +3211,14 @@ function DailyReviewScreen({ completedStepIds: e, onRecordStudyDay: t, onNavigat
                 let prompt = C[0];
                 if (!prompt) return;
                 if (!wasCorrect) {
-                  let reviewCardId = getVerbFamilyWritingReviewCardId(prompt),
-                    reviewCard = studyPrep.cards.find((card) => card.id === reviewCardId) ?? prompt.card,
-                    sayForms = prompt.verbFamilyForms ?? [prompt.card];
-                  s !== `replay` && gradeDailyReviewPrompt(reviewCardId, !1);
+                  let reviewCardIds = getDailyReviewPromptCardIds(prompt),
+                    sayForms = getDailyReviewPromptAnswerCards(prompt);
+                  s !== `replay` && reviewCardIds.forEach((cardId) => gradeDailyReviewPrompt(cardId, !1));
                   s !== `replay` && x((count) => count + 1);
                   s !== `replay` &&
-                    h((missed) => (missed.some((card) => card.id === reviewCard.id) ? missed : [...missed, reviewCard]));
+                    h((missed) =>
+                      missed.some((item) => getDailyReviewPromptCardIds(item).join(`:`) === reviewCardIds.join(`:`)) ? missed : [...missed, prompt],
+                    );
                   setSayLoopForms(sayForms);
                   _(!1);
                   return;
