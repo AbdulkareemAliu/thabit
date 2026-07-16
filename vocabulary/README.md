@@ -8,7 +8,7 @@ Only detected lesson vocabulary tables were exported: nouns, verbs, and phrases.
 
 - `nouns.csv`: `arabic,arabic_image,english`
 - `phrases.csv`: `arabic,arabic_image,english`
-- `verbs.csv`: Arabic form columns plus matching `*_arabic_image` columns for each form.
+- `verbs.csv`: Arabic form columns plus matching `*_arabic_image` columns for each form. Optional `harf_arabic` column for the preposition/particle (الحرف) that accompanies the verb, e.g. `مَعَ` or `إِلَى`. Run `python scripts/populate-verb-harf.py` to fill `harf_arabic` from the source PDF.
 
 Note: the PDF provides a single English gloss for most verbs, so that extracted gloss is reused across the tense/form English columns rather than inventing translations.
 

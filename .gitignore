@@ -48,3 +48,6 @@ agent-transcripts/
 .vscode/*
 !.vscode/extensions.json
 !.vscode/settings.json
+
+# Local Netlify folder
+.netlify

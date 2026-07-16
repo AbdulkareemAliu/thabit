@@ -1,15 +1,23 @@
 import { parseEnglishStemAndTags } from "./batching";
+import { formatEnglishCueText, getEnglishAnswerInContext, getEnglishCueDisplayCard } from "./english-cue";
 import {
-  getLessonVerbRecognitionCards,
-  getVerbEnglishRecognitionLabel,
+  getLessonNounFamilyCards,
+  getLessonVerbFamilyCards,
+  getNounFamilyFormsForCard,
+  getNounFamilyMeaningLabel,
+  getNounFamilyIdFromCardId,
+  getVerbFamilyFormsForCard,
   getVerbFamilyIdFromCardId,
-  groupExposureCardsIntoVerbFamilies,
-  prepareVerbBatchRecognition,
+  getVerbFamilyMeaningLabel,
+  prepareBatchStudyCards,
 } from "./exposure-cards";
 import { shuffle } from "./shuffle";
 import type { ExposureCard } from "./types";
 
 export const STUDY_PASSES_REQUIRED = 2;
+
+/** Bump when writing-test queue build/advance rules change (invalidates saved sessions). */
+export const WRITING_QUEUE_LOGIC_VERSION = 7;
 
 export type CueSide = "arabic" | "english";
 
@@ -19,6 +27,87 @@ export type StudyPrompt = {
   passesRemaining: number;
   passesRequired: number;
   verbFamilyForms?: ExposureCard[];
+  /** One sequential write prompt per verb form (family still tested together). */
+  verbFamilyFormPart?: boolean;
+  verbFamilyFormIndex?: number;
+  verbFamilyFormCount?: number;
+};
+
+export const isVerbFamilyWritingPrompt = (prompt: StudyPrompt) =>
+  Boolean(
+    prompt.cueSide === "english" &&
+      prompt.verbFamilyForms &&
+      prompt.verbFamilyForms.length > 1 &&
+      (prompt.card.section === "verbs" || prompt.card.section === "nouns"),
+  );
+
+const attachVerbFamilyFormPart = (
+  prompt: StudyPrompt,
+  form: ExposureCard,
+  index: number,
+  forms: ExposureCard[],
+): StudyPrompt => ({
+  ...prompt,
+  card: form,
+  verbFamilyForms: forms,
+  verbFamilyFormPart: true,
+  verbFamilyFormIndex: index,
+  verbFamilyFormCount: forms.length,
+});
+
+export const expandVerbFamilyWritingPrompt = (prompt: StudyPrompt): StudyPrompt[] => {
+  if (prompt.verbFamilyFormPart || !isVerbFamilyWritingPrompt(prompt)) return [prompt];
+  const forms = prompt.verbFamilyForms!;
+  return forms.map((form, index) => attachVerbFamilyFormPart(prompt, form, index, forms));
+};
+
+export const getVerbFamilyFormPartIndex = (prompt: StudyPrompt) => {
+  if (!prompt.verbFamilyFormPart) return -1;
+  if (typeof prompt.verbFamilyFormIndex === "number") return prompt.verbFamilyFormIndex;
+  if (!prompt.verbFamilyForms?.length) return -1;
+  return prompt.verbFamilyForms.findIndex((form) => form.id === prompt.card.id);
+};
+
+export const getVerbFamilyFormPartCount = (prompt: StudyPrompt) => {
+  if (!prompt.verbFamilyFormPart) return 0;
+  if (typeof prompt.verbFamilyFormCount === "number") return prompt.verbFamilyFormCount;
+  return prompt.verbFamilyForms?.length ?? 0;
+};
+
+const getFamilyWritingBlockId = (prompt: StudyPrompt) => {
+  const head = prompt.verbFamilyForms?.[0] ?? prompt.card;
+  if (head.section === "verbs") return getVerbFamilyIdFromCardId(head.id);
+  if (head.section === "nouns") return getNounFamilyIdFromCardId(head.id);
+  return head.id;
+};
+
+/** Forms for one family must appear back-to-back in index order (0, 1, 2, …). */
+export const isValidFamilyWritingQueue = (queue: StudyPrompt[]): boolean => {
+  let previous: StudyPrompt | undefined;
+
+  for (const prompt of queue) {
+    if (!prompt.verbFamilyFormPart) {
+      if (prompt.verbFamilyForms?.length) return false;
+      previous = prompt;
+      continue;
+    }
+
+    const index = getVerbFamilyFormPartIndex(prompt);
+    const count = getVerbFamilyFormPartCount(prompt);
+    if (index < 0 || count <= 0) return false;
+
+    if (index === 0) {
+      previous = prompt;
+      continue;
+    }
+
+    if (!previous?.verbFamilyFormPart) return false;
+    if (getFamilyWritingBlockId(previous) !== getFamilyWritingBlockId(prompt)) return false;
+    if (getVerbFamilyFormPartIndex(previous) !== index - 1) return false;
+    previous = prompt;
+  }
+
+  return true;
 };
 
 const getCueSidesInSet = (prompts: StudyPrompt[]) => new Set(prompts.map((prompt) => prompt.cueSide));
@@ -98,6 +187,9 @@ const ensureNoLeadingConflict = (previous: StudyPrompt, queue: StudyPrompt[]): S
   const conflicts = (left: StudyPrompt, right: StudyPrompt) => promptsConflictInSet(left, right, context);
   if (queue.length === 0 || !conflicts(previous, queue[0]!)) return queue;
 
+  // Never peel individual verb form parts out of a family block.
+  if (queue.some((prompt) => prompt.verbFamilyFormPart)) return queue;
+
   for (let candidateIndex = 1; candidateIndex < queue.length; candidateIndex += 1) {
     const candidate = queue[candidateIndex]!;
     if (conflicts(previous, candidate)) continue;
@@ -113,7 +205,7 @@ const ensureNoLeadingConflict = (previous: StudyPrompt, queue: StudyPrompt[]): S
   return queue;
 };
 
-export const getEnglishAnswer = (card: ExposureCard) => card.english;
+export const getEnglishAnswer = (card: ExposureCard) => formatEnglishCueText(card);
 
 export const getArabicAnswer = (card: ExposureCard) => card.arabic;
 
@@ -122,6 +214,10 @@ export const getCardEnglishStemKey = (card: ExposureCard) => parseEnglishStemAnd
 export const getCardArabicStemKey = (card: ExposureCard) => {
   if (card.section === "verbs") {
     const match = card.id.match(/^(.*)-(past|present|command|masdar|passive|activeParticiple)$/);
+    return match?.[1] ?? card.id;
+  }
+  if (card.section === "nouns") {
+    const match = card.id.match(/^(.*)-(singular|plural)$/);
     return match?.[1] ?? card.id;
   }
   return getCardEnglishStemKey(card);
@@ -144,7 +240,7 @@ export const BATCH_TEST_WRITING_CONFIG: WritingQueueConfig = {
 
 export const BATCH_REVIEW_WRITING_CONFIG: WritingQueueConfig = {
   cueSides: ["english"],
-  passesForCue: () => 2,
+  passesForCue: () => 1,
 };
 
 export const SECTION_FINALE_WRITING_CONFIG: WritingQueueConfig = {
@@ -157,13 +253,44 @@ export const DAILY_REVIEW_WRITING_CONFIG: WritingQueueConfig = {
   passesForCue: () => 1,
 };
 
-export const writingTestPromptTotal = (cards: ExposureCard[], config: WritingQueueConfig) =>
-  cards.reduce(
-    (total, card) =>
-      total +
-      config.cueSides.reduce((sideTotal, cueSide) => sideTotal + (config.passesForCue?.(card, cueSide) ?? 1), 0),
-    0,
-  );
+export const buildDailyReviewFlashcardQueue = (
+  reviewQueue: { id: string }[],
+  prep: {
+    cards: ExposureCard[];
+    familyFormsByCardId: Map<string, ExposureCard[]>;
+  },
+): StudyPrompt[] => {
+  const cardById = new Map(prep.cards.map((card) => [card.id, card]));
+  const prompts: StudyPrompt[] = [];
+
+  for (const reviewCard of reviewQueue) {
+    const card = cardById.get(reviewCard.id);
+    if (!card) continue;
+
+    prompts.push({
+      card,
+      cueSide: "english",
+      passesRemaining: 1,
+      passesRequired: 1,
+      verbFamilyForms: prep.familyFormsByCardId.get(card.id) ?? [card],
+    });
+  }
+
+  return shuffle(prompts);
+};
+
+const resolveWritingTestPrep = (cards: ExposureCard[], familyFormsByCardId?: Map<string, ExposureCard[]>) => {
+  if (cards.length > 0 && familyFormsByCardId?.size) {
+    return { cards, familyFormsByCardId };
+  }
+  if (cards.length > 0 && (cards[0]?.section === "verbs" || cards[0]?.section === "nouns")) {
+    return prepareBatchStudyCards(cards);
+  }
+  return { cards, familyFormsByCardId: familyFormsByCardId ?? new Map<string, ExposureCard[]>() };
+};
+
+/** One family at a time, every form in order. No spacing shuffle for family batches. */
+const buildFamilyWritingQueue = (prompts: StudyPrompt[]) => prompts.flatMap(expandVerbFamilyWritingPrompt);
 
 export const buildWritingStudyQueue = (
   cards: ExposureCard[],
@@ -171,47 +298,151 @@ export const buildWritingStudyQueue = (
   shuffleCards = false,
   familyFormsByCardId?: Map<string, ExposureCard[]>,
 ): StudyPrompt[] => {
-  const orderedCards = shuffleCards ? shuffle(cards) : cards;
+  const prep = resolveWritingTestPrep(cards, familyFormsByCardId);
+  const formsMap = prep.familyFormsByCardId;
+  const orderedCards = shuffleCards ? shuffle(prep.cards) : prep.cards;
   const prompts = orderedCards.flatMap((card) =>
     config.cueSides.map((cueSide): StudyPrompt => {
       const passesRequired = config.passesForCue?.(card, cueSide) ?? 1;
-      const verbFamilyForms = familyFormsByCardId?.get(card.id);
+      const verbFamilyForms = formsMap.get(card.id);
       return { card, cueSide, passesRemaining: passesRequired, passesRequired, verbFamilyForms };
     }),
   );
 
+  if (prompts.some(isVerbFamilyWritingPrompt)) {
+    return buildFamilyWritingQueue(prompts);
+  }
+
   return buildSpacedStudyQueue(prompts);
 };
 
-export const buildBatchWritingStudyQueue = (cards: ExposureCard[]): StudyPrompt[] => {
-  const basePrompts = cards.flatMap((card) =>
-    BATCH_TEST_WRITING_CONFIG.cueSides.map((cueSide): StudyPrompt => {
-      const passesRequired = BATCH_TEST_WRITING_CONFIG.passesForCue?.(card, cueSide) ?? 1;
-      return { card, cueSide, passesRemaining: passesRequired, passesRequired };
-    }),
-  );
+export const writingTestPromptTotal = (
+  cards: ExposureCard[],
+  config: WritingQueueConfig,
+  familyFormsByCardId?: Map<string, ExposureCard[]>,
+) => {
+  const prep = resolveWritingTestPrep(cards, familyFormsByCardId);
+  const formsMap = prep.familyFormsByCardId.size ? prep.familyFormsByCardId : (familyFormsByCardId ?? new Map());
 
-  return buildSpacedStudyQueue(basePrompts);
+  return prep.cards.reduce((total, card) => {
+    const familyForms = formsMap.get(card.id);
+    const sideTotal = config.cueSides.reduce((count, cueSide) => {
+      const passes = config.passesForCue?.(card, cueSide) ?? 1;
+      if (
+        cueSide === "english" &&
+        familyForms &&
+        familyForms.length > 1 &&
+        (card.section === "verbs" || card.section === "nouns")
+      ) {
+        return count + passes * familyForms.length;
+      }
+      return count + passes;
+    }, 0);
+    return total + sideTotal;
+  }, 0);
 };
 
-export const batchWritingTestPromptTotal = (cards: ExposureCard[]) =>
-  writingTestPromptTotal(cards, BATCH_TEST_WRITING_CONFIG);
+/** Progress denominator: one step per family (or standalone card), not per form. */
+export const writingTestFamilyTotal = (
+  cards: ExposureCard[],
+  familyFormsByCardId?: Map<string, ExposureCard[]>,
+) => resolveWritingTestPrep(cards, familyFormsByCardId).cards.length;
 
-export const getBatchMultipleChoiceCards = (cards: ExposureCard[]) =>
-  prepareVerbBatchRecognition(cards)?.cards ?? cards;
+export const isFirstVerbFamilyFormPart = (prompt: StudyPrompt) => getVerbFamilyFormPartIndex(prompt) === 0;
 
-export const buildBatchMultipleChoiceStudyQueue = (cards: ExposureCard[], cueSides: CueSide[] = BATCH_TEST_MC_CUE_SIDES) =>
-  buildMultipleChoiceStudyQueue(getBatchMultipleChoiceCards(cards), cueSides);
+export const isLastVerbFamilyFormPart = (prompt: StudyPrompt, remainingQueueLength = 0) => {
+  if (!prompt.verbFamilyFormPart) return true;
+  const index = getVerbFamilyFormPartIndex(prompt);
+  const count = getVerbFamilyFormPartCount(prompt);
+  if (index >= 0 && count > 0) return index === count - 1;
+  return remainingQueueLength === 0;
+};
+
+export const getVerbFamilyWritingReviewCardId = (prompt: StudyPrompt) =>
+  prompt.verbFamilyForms?.[0]?.id ?? prompt.card.id;
+
+const collapseVerbFamilyWritingPrompt = (prompt: StudyPrompt): StudyPrompt => ({
+  card: prompt.verbFamilyForms![0]!,
+  cueSide: prompt.cueSide,
+  passesRemaining: prompt.passesRemaining,
+  passesRequired: prompt.passesRequired,
+  verbFamilyForms: prompt.verbFamilyForms,
+});
+
+const buildExpandedFamilyBlock = (familyHead: StudyPrompt, passesRemaining: number): StudyPrompt[] =>
+  expandVerbFamilyWritingPrompt({
+    ...familyHead,
+    passesRemaining,
+    passesRequired: familyHead.passesRequired,
+  });
+
+const appendFamilyWritingBlock = (queue: StudyPrompt[], block: StudyPrompt[]) =>
+  block.length === 0 ? queue : [...queue, ...block];
+
+const advanceFamilyWritingBlock = (
+  rest: StudyPrompt[],
+  familyHead: StudyPrompt,
+  familyCorrect: boolean,
+  mode: StudyQueueAdvanceMode,
+): StudyPrompt[] => {
+  if (mode === "capped-attempts") {
+    if (familyCorrect) return rest;
+    if (familyHead.passesRemaining <= 1) return rest;
+    return appendFamilyWritingBlock(rest, buildExpandedFamilyBlock(familyHead, familyHead.passesRemaining - 1));
+  }
+
+  if (!familyCorrect) {
+    return appendFamilyWritingBlock(rest, buildExpandedFamilyBlock(familyHead, familyHead.passesRequired));
+  }
+
+  if (familyHead.passesRemaining <= 1) return rest;
+
+  return appendFamilyWritingBlock(rest, buildExpandedFamilyBlock(familyHead, familyHead.passesRemaining - 1));
+};
+
+export const buildWithinBatchWritingStudyQueue = (
+  prep: { cards: ExposureCard[]; familyFormsByCardId: Map<string, ExposureCard[]> },
+  config: WritingQueueConfig = BATCH_TEST_WRITING_CONFIG,
+): StudyPrompt[] => buildWritingStudyQueue(prep.cards, config, false, prep.familyFormsByCardId);
+
+export const buildBatchWritingStudyQueue = (cards: ExposureCard[]): StudyPrompt[] => {
+  const prep = prepareBatchStudyCards(cards);
+  return buildWithinBatchWritingStudyQueue(prep, BATCH_TEST_WRITING_CONFIG);
+};
+
+export const batchWritingTestPromptTotal = (cards: ExposureCard[]) => {
+  const prep = prepareBatchStudyCards(cards);
+  return writingTestPromptTotal(prep.cards, BATCH_TEST_WRITING_CONFIG, prep.familyFormsByCardId);
+};
+
+export const getBatchMultipleChoiceCards = (cards: ExposureCard[]) => prepareBatchStudyCards(cards).cards;
+
+const isMultiFormMcFamily = (forms?: ExposureCard[] | null) => Boolean(forms && forms.length > 1);
+
+export const buildBatchMultipleChoiceStudyQueue = (cards: ExposureCard[], cueSides: CueSide[] = BATCH_TEST_MC_CUE_SIDES) => {
+  const prep = prepareBatchStudyCards(cards);
+  const prompts = prep.cards.flatMap((card) =>
+    cueSides.map(
+      (cueSide): StudyPrompt => ({
+        card,
+        cueSide,
+        passesRemaining: STUDY_PASSES_REQUIRED,
+        passesRequired: STUDY_PASSES_REQUIRED,
+        verbFamilyForms: prep.familyFormsByCardId.get(card.id),
+      }),
+    ),
+  );
+  return buildSpacedStudyQueue(prompts);
+};
 
 export const batchMultipleChoicePromptTotal = (cards: ExposureCard[], cueSides: CueSide[] = BATCH_TEST_MC_CUE_SIDES) =>
   multipleChoicePromptTotal(getBatchMultipleChoiceCards(cards).length, cueSides);
 
-export const buildLessonTestWritingConfig = (lessonId: string, getMissedPasses: (cardId: string, cueSide: CueSide) => number): WritingQueueConfig => ({
-  cueSides: ["english"],
-  passesForCue: (card, cueSide) => getMissedPasses(card.id, cueSide),
-});
-
-export const buildMultipleChoiceStudyQueue = (cards: ExposureCard[], cueSides: CueSide[] = ["arabic", "english"]): StudyPrompt[] => {
+export const buildMultipleChoiceStudyQueue = (
+  cards: ExposureCard[],
+  cueSides: CueSide[] = ["arabic", "english"],
+  familyFormsByCardId?: Map<string, ExposureCard[]>,
+): StudyPrompt[] => {
   const prompts = cards.flatMap((card) =>
     cueSides.map(
       (cueSide): StudyPrompt => ({
@@ -219,6 +450,7 @@ export const buildMultipleChoiceStudyQueue = (cards: ExposureCard[], cueSides: C
         cueSide,
         passesRemaining: STUDY_PASSES_REQUIRED,
         passesRequired: STUDY_PASSES_REQUIRED,
+        verbFamilyForms: familyFormsByCardId?.get(card.id),
       }),
     ),
   );
@@ -226,13 +458,57 @@ export const buildMultipleChoiceStudyQueue = (cards: ExposureCard[], cueSides: C
   return buildSpacedStudyQueue(prompts);
 };
 
+export const getMultipleChoiceAnswerKey = (prompt: StudyPrompt, contextCards?: ExposureCard[]) => {
+  if (isMultiFormMcFamily(prompt.verbFamilyForms)) {
+    if (prompt.cueSide === "arabic") {
+      return prompt.card.section === "nouns"
+        ? getNounFamilyMeaningLabel(prompt.verbFamilyForms!)
+        : getVerbFamilyMeaningLabel(prompt.verbFamilyForms!);
+    }
+    return prompt.card.section === "nouns"
+      ? getNounFamilyIdFromCardId(prompt.card.id)
+      : getVerbFamilyIdFromCardId(prompt.card.id);
+  }
+  return prompt.cueSide === "arabic"
+    ? contextCards
+      ? getEnglishAnswerInContext(prompt.card, contextCards)
+      : getEnglishAnswer(prompt.card)
+    : getArabicAnswer(prompt.card);
+};
+
+export const getMultipleChoiceArabicOptionKey = (prompt: StudyPrompt, option: ExposureCard) => {
+  if (prompt.card.section === "verbs" && isMultiFormMcFamily(prompt.verbFamilyForms)) {
+    return getVerbFamilyIdFromCardId(option.id);
+  }
+  if (prompt.card.section === "nouns" && isMultiFormMcFamily(prompt.verbFamilyForms)) {
+    return getNounFamilyIdFromCardId(option.id);
+  }
+  return getArabicAnswer(option);
+};
+
+export const buildLessonTestWritingConfig = (): WritingQueueConfig => ({
+  cueSides: ["english"],
+  passesForCue: () => 1,
+});
+
 export type StudyQueueAdvanceMode = "repeat-until-correct" | "capped-attempts";
 
 export const shouldIncrementWritingProgress = (
-  _prompt: StudyPrompt,
+  prompt: StudyPrompt,
   wasCorrect: boolean,
-  _mode: StudyQueueAdvanceMode = "repeat-until-correct",
-) => wasCorrect;
+  mode: StudyQueueAdvanceMode = "repeat-until-correct",
+  familyHadMiss = false,
+) => {
+  if (prompt.verbFamilyFormPart && !isLastVerbFamilyFormPart(prompt)) return false;
+  if (prompt.verbFamilyFormPart) {
+    if (!wasCorrect || familyHadMiss) return false;
+    return prompt.passesRemaining <= 1;
+  }
+  if (mode === "capped-attempts") {
+    return wasCorrect || prompt.passesRemaining <= 1;
+  }
+  return wasCorrect && prompt.passesRemaining <= 1;
+};
 
 export const advanceStudyPromptQueue = (
   queue: StudyPrompt[],
@@ -260,6 +536,52 @@ export const advanceStudyPromptQueue = (
   }
 
   return ensureNoLeadingConflict(current, nextQueue);
+};
+
+export const advanceWritingStudyQueue = (
+  queue: StudyPrompt[],
+  wasCorrect: boolean,
+  familyHadMiss = false,
+  mode: StudyQueueAdvanceMode = "repeat-until-correct",
+): StudyPrompt[] => {
+  const [current, ...rest] = queue;
+  if (!current) return rest;
+
+  if (isVerbFamilyWritingPrompt(current) && !current.verbFamilyFormPart) {
+    return [...expandVerbFamilyWritingPrompt(current), ...rest];
+  }
+
+  if (current.verbFamilyFormPart && current.verbFamilyForms?.length) {
+    if (!isLastVerbFamilyFormPart(current, rest.length)) return rest;
+
+    const familyCorrect = wasCorrect && !familyHadMiss;
+    const familyHead = collapseVerbFamilyWritingPrompt(current);
+    return advanceFamilyWritingBlock(rest, familyHead, familyCorrect, mode);
+  }
+
+  return advanceStudyPromptQueue(queue, wasCorrect, mode);
+};
+
+/** Skip remaining forms in the current family, append a repeat block, and continue. */
+export const advanceWritingStudyQueueAfterFamilyMiss = (
+  queue: StudyPrompt[],
+  mode: StudyQueueAdvanceMode = "repeat-until-correct",
+): StudyPrompt[] => {
+  const [current, ...rest] = queue;
+  if (!current) return rest;
+
+  if (!isVerbFamilyWritingPrompt(current)) {
+    return advanceStudyPromptQueue(queue, false, mode);
+  }
+
+  const familyHead = current.verbFamilyFormPart ? collapseVerbFamilyWritingPrompt(current) : current;
+  const familyKey = getFamilyWritingBlockId(current);
+  const filteredRest = rest.filter((prompt) => {
+    if (!prompt.verbFamilyFormPart || !prompt.verbFamilyForms?.length) return true;
+    return getFamilyWritingBlockId(prompt) !== familyKey;
+  });
+
+  return advanceFamilyWritingBlock(filteredRest, familyHead, false, mode);
 };
 
 const DISTRACTOR_COUNT = 3;
@@ -335,22 +657,45 @@ const shuffleChoiceOptions = <T,>(correct: T, distractors: T[]) => {
   return options;
 };
 
-export const getEnglishMultipleChoiceOptions = (currentCard: ExposureCard, lessonCards: ExposureCard[]) => {
-  const correct = getEnglishAnswer(currentCard);
-  const distractors = pickStemDistractors(currentCard, lessonCards, getCardEnglishStemKey, getEnglishAnswer, DISTRACTOR_COUNT);
+export const getEnglishMultipleChoiceOptions = (
+  currentCard: ExposureCard,
+  lessonCards: ExposureCard[],
+  contextCards?: ExposureCard[],
+) => {
+  const getAnswer = (card: ExposureCard) =>
+    contextCards ? formatEnglishCueText(getEnglishCueDisplayCard(card, contextCards)) : getEnglishAnswer(card);
+  const correct = getAnswer(currentCard);
+  const distractors = pickStemDistractors(currentCard, lessonCards, getCardEnglishStemKey, getAnswer, DISTRACTOR_COUNT);
   return shuffleChoiceOptions(correct, distractors);
 };
 
-const getVerbEnglishRecognitionAnswer = (currentCard: ExposureCard, batchCards: ExposureCard[]) => {
-  const batchRecognition = prepareVerbBatchRecognition(batchCards);
-  const familyId = getVerbFamilyIdFromCardId(currentCard.id);
-  const fromBatch = batchRecognition?.englishLabelsByFamilyId.get(familyId);
-  if (fromBatch) return fromBatch;
+const getVerbFamilyEnglishAnswer = (card: ExposureCard, familyForms?: ExposureCard[]) =>
+  getVerbFamilyMeaningLabel(familyForms?.length ? familyForms : [card]);
 
-  const family = groupExposureCardsIntoVerbFamilies(batchCards).find((forms) =>
-    forms.some((form) => getVerbFamilyIdFromCardId(form.id) === familyId),
-  );
-  return family ? getVerbEnglishRecognitionLabel(family, currentCard) : getEnglishAnswer(currentCard);
+const getNounFamilyEnglishAnswer = (card: ExposureCard, familyForms?: ExposureCard[]) =>
+  getNounFamilyMeaningLabel(familyForms?.length ? familyForms : [card]);
+
+const getBatchEnglishMcAnswer = (
+  card: ExposureCard,
+  lessonCards: ExposureCard[],
+  batchCards: ExposureCard[],
+  batchPrep: ReturnType<typeof prepareBatchStudyCards>,
+) => {
+  if (card.section === "nouns") {
+    const familyForms =
+      batchPrep.familyFormsByCardId.get(card.id) ?? getNounFamilyFormsForCard(lessonCards, card);
+    if (isMultiFormMcFamily(familyForms)) {
+      return getNounFamilyEnglishAnswer(card, familyForms ?? undefined);
+    }
+    return formatEnglishCueText(getEnglishCueDisplayCard(card, batchCards));
+  }
+
+  const familyForms =
+    batchPrep.familyFormsByCardId.get(card.id) ?? getVerbFamilyFormsForCard(lessonCards, card);
+  if (isMultiFormMcFamily(familyForms)) {
+    return getVerbFamilyEnglishAnswer(card, familyForms ?? undefined);
+  }
+  return formatEnglishCueText(getEnglishCueDisplayCard(card, batchCards));
 };
 
 export const getBatchEnglishMultipleChoiceOptions = (
@@ -358,17 +703,42 @@ export const getBatchEnglishMultipleChoiceOptions = (
   lessonCards: ExposureCard[],
   batchCards: ExposureCard[],
 ) => {
-  if (currentCard.section !== "verbs") {
-    return getEnglishMultipleChoiceOptions(currentCard, lessonCards);
+  if (currentCard.section === "nouns" && batchCards[0]?.section === "nouns") {
+    const batchPrep = prepareBatchStudyCards(batchCards);
+    const familyForms =
+      batchPrep.familyFormsByCardId.get(currentCard.id) ?? getNounFamilyFormsForCard(lessonCards, currentCard);
+    if (!isMultiFormMcFamily(familyForms)) {
+      return getEnglishMultipleChoiceOptions(currentCard, lessonCards, batchCards);
+    }
+    const correct = getNounFamilyEnglishAnswer(currentCard, familyForms ?? undefined);
+    const lessonFamilyCards = getLessonNounFamilyCards(lessonCards);
+    const distractors = pickStemDistractors(
+      currentCard,
+      lessonFamilyCards,
+      (card) => getNounFamilyIdFromCardId(card.id),
+      (card) => getBatchEnglishMcAnswer(card, lessonCards, batchCards, batchPrep),
+      DISTRACTOR_COUNT,
+    );
+    return shuffleChoiceOptions(correct, distractors);
   }
 
-  const correct = getVerbEnglishRecognitionAnswer(currentCard, batchCards);
-  const lessonRecognition = getLessonVerbRecognitionCards(lessonCards);
+  if (currentCard.section !== "verbs") {
+    return getEnglishMultipleChoiceOptions(currentCard, lessonCards, batchCards);
+  }
+
+  const batchPrep = prepareBatchStudyCards(batchCards);
+  const familyForms =
+    batchPrep.familyFormsByCardId.get(currentCard.id) ?? getVerbFamilyFormsForCard(lessonCards, currentCard);
+  if (!isMultiFormMcFamily(familyForms)) {
+    return getEnglishMultipleChoiceOptions(currentCard, lessonCards, batchCards);
+  }
+  const correct = getVerbFamilyEnglishAnswer(currentCard, familyForms ?? undefined);
+  const lessonFamilyCards = getLessonVerbFamilyCards(lessonCards);
   const distractors = pickStemDistractors(
     currentCard,
-    lessonRecognition,
-    getCardArabicStemKey,
-    (card) => getVerbEnglishRecognitionAnswer(card, batchCards),
+    lessonFamilyCards,
+    (card) => getVerbFamilyIdFromCardId(card.id),
+    (card) => getBatchEnglishMcAnswer(card, lessonCards, batchCards, batchPrep),
     DISTRACTOR_COUNT,
   );
   return shuffleChoiceOptions(correct, distractors);
@@ -396,10 +766,14 @@ export const getBatchArabicMultipleChoiceOptions = (
   lessonCards: ExposureCard[],
   _batchCards: ExposureCard[],
 ) => {
+  if (currentCard.section === "nouns") {
+    return getArabicMultipleChoiceOptions(currentCard, getLessonNounFamilyCards(lessonCards));
+  }
+
   if (currentCard.section !== "verbs") {
     return getArabicMultipleChoiceOptions(currentCard, lessonCards);
   }
 
-  const lessonRecognition = getLessonVerbRecognitionCards(lessonCards);
-  return getArabicMultipleChoiceOptions(currentCard, lessonRecognition);
+  const lessonFamilyCards = getLessonVerbFamilyCards(lessonCards);
+  return getArabicMultipleChoiceOptions(currentCard, lessonFamilyCards);
 };

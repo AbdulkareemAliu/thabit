@@ -115,6 +115,19 @@ const getSectionMemorizationSteps = (lesson: Lesson, section: SectionKind) =>
 export const isSectionMemorizationComplete = (lesson: Lesson, section: SectionKind, completedStepIds: string[]) =>
   getSectionMemorizationSteps(lesson, section).every((step) => completedStepIds.includes(step.id));
 
+/** A section is done when its vocabulary test is complete, or when it has no test and all batches are done. */
+export const isSectionReadyForFinal = (lesson: Lesson, section: SectionKind, completedStepIds: string[]) => {
+  if (!lessonSectionHasSteps(lesson, section)) return true;
+
+  const sectionTest = lesson.steps.find((step) => step.kind === "vocabulary-test" && step.section === section);
+  if (sectionTest) return completedStepIds.includes(sectionTest.id);
+
+  return isSectionMemorizationComplete(lesson, section, completedStepIds);
+};
+
+export const areAllSectionsReadyForFinal = (lesson: Lesson, completedStepIds: string[]) =>
+  LESSON_SECTION_ORDER.every((section) => isSectionReadyForFinal(lesson, section, completedStepIds));
+
 const getBatchAndReviewSteps = (lesson: Lesson) => lesson.steps.filter((step) => step.kind === "batch" || step.kind === "batch-review");
 
 export const getLessonProgressSummary = (lesson: Lesson, completedStepIds: string[], allLessons: Lesson[]): LessonProgressSummary => {
@@ -155,8 +168,6 @@ export const getEffectiveMemorizationSteps = (lesson: Lesson, completedStepIds: 
 
   const batchReviewSteps = getBatchAndReviewSteps(lesson);
   const firstOpenBatchReviewIndex = batchReviewSteps.findIndex((step) => !completedStepIds.includes(step.id));
-  const sectionTests = lesson.steps.filter((step) => step.kind === "vocabulary-test");
-  const allSectionTestsComplete = sectionTests.length > 0 && sectionTests.every((step) => completedStepIds.includes(step.id));
 
   const resolveStatus = (step: LessonStep): StepStatus => {
     if (completedStepIds.includes(step.id)) return "complete";
@@ -174,7 +185,7 @@ export const getEffectiveMemorizationSteps = (lesson: Lesson, completedStepIds: 
     }
 
     if (step.kind === "final-test") {
-      return allSectionTestsComplete ? "available" : "locked";
+      return areAllSectionsReadyForFinal(lesson, completedStepIds) ? "available" : "locked";
     }
 
     return "locked";

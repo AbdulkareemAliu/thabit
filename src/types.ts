@@ -23,12 +23,16 @@ export type PhraseItem = {
   hard?: boolean;
 };
 
+export type NounFormKey = "singular" | "plural";
+
 export type VerbFormKey = "past" | "present" | "command" | "masdar" | "passive" | "activeParticiple";
 
 export type VerbFamily = {
   id: string;
   /** Fallback label when a form has no english in the CSV. */
   meaning: string;
+  /** Preposition/particle that accompanies the verb, e.g. مَعَ or إِلَى. */
+  harf?: string;
   past: string;
   present: string;
   command: string;
@@ -56,10 +60,16 @@ export type ExposureCard = {
   id: string;
   arabic: string;
   english: string;
+  englishStem?: string;
+  englishTags?: string[];
+  englishVariant?: number;
+  englishVariantTotal?: number;
   section: SectionKind;
   batchIndex?: number;
   imageUrl?: string;
   label?: string;
+  /** Verb-family particle from the harf column (shared across all forms). */
+  harf?: string;
 };
 
 export type Lesson = {

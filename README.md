@@ -33,19 +33,43 @@ Build for production:
 npm run build
 ```
 
+## Netlify deployment
+
+This repository includes `netlify.toml`, so Netlify can build and deploy it without extra configuration:
+
+- Build command: `npm run build`
+- Publish directory: `dist`
+- Node version: 22
+
+For automatic updates, import the GitHub repository into Netlify. Every push to `master` will build and deploy the latest version at the same HTTPS URL.
+
+For a manual production deploy from this computer:
+
+```sh
+npm run deploy:netlify
+```
+
 Preview a production build without the service worker:
 
 ```sh
 npm run preview
 ```
 
-For testing on a phone on the same network:
+For testing on a phone on the same WiFi:
 
 ```sh
 npm run dev:phone
 ```
 
-or:
+This builds the app once, then serves a **single bundled file** on port **4173** (not the dev server on 5173). The raw dev server sends thousands of small files and usually hangs or never finishes on a phone.
+
+Open the URL printed in the terminal **in Safari** — it will look like `http://10.x.x.x:4173/`. Use **http**, not https.
+
+After you change code, run `npm run dev:phone` again to rebuild.
+
+Do not use a home-screen icon while testing locally.
+
+For a production-like build without a service worker:
 
 ```sh
 npm run preview:phone:http

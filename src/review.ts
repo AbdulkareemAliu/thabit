@@ -1,13 +1,24 @@
-import { resolveVerbFormKeyFromLabel } from "./exposure-cards";
-import { REVIEW_MAX_INTERVAL_DAYS, REVIEW_NEW_CARD_STAGGER_DAYS } from "./config";
-import { isLessonComplete } from "./progress";
+import {
+  getCachedLessonExposureCards,
+  getNounFamilyIdFromCardId,
+  getNounFamilyReviewRepresentative,
+  getVerbFamilyIdFromCardId,
+  getVerbFamilyReviewRepresentative,
+  prepareNounBatchReviewTestCards,
+  prepareVerbBatchReviewTestCards,
+} from "./exposure-cards";
+import { REVIEW_MAX_INTERVAL_DAYS, REVIEW_NEW_CARD_STAGGER_DAYS, REVIEW_SCHEDULE_JITTER_DAYS } from "./config";
+import { isLessonComplete, isLessonFinalComplete, isSectionReadyForFinal } from "./progress";
+import { lessons } from "./data";
 import { shuffle } from "./shuffle";
 import { addDays, todayKey } from "./today";
-import type { Lesson, SectionKind, VerbFormKey } from "./types";
+import type { Lesson, SectionKind } from "./types";
 
 export const REVIEW_STORAGE_KEY = "thabit.reviewCards";
 const STAGGERED_REVIEW_SCHEDULE_MIGRATION_KEY = "thabit.migration.staggeredReviewSchedule_v1";
-const SHORTER_NEW_CARD_STAGGER_MIGRATION_KEY = "thabit.migration.shorterNewCardStagger_v3";
+const GLOBAL_NEW_CARD_STAGGER_MIGRATION_KEY = "thabit.migration.globalNewCardStagger_v2";
+const VERB_FAMILY_REVIEW_MIGRATION_KEY = "thabit.migration.verbFamilyReview_v1";
+const NOUN_FAMILY_REVIEW_MIGRATION_KEY = "thabit.migration.nounFamilyReview_v1";
 export const MAX_INTERVAL_DAYS = REVIEW_MAX_INTERVAL_DAYS;
 const DEFAULT_EASE = 2.5;
 const HARD_EASE = 2.3;
@@ -39,8 +50,6 @@ export type DailyReviewStats = {
   newCount: number;
 };
 
-const labelToVerbForm = (label: string) => resolveVerbFormKeyFromLabel(label);
-
 const readReviewCards = (): Record<string, ReviewCardRecord> => {
   try {
     const stored = window.localStorage.getItem(REVIEW_STORAGE_KEY);
@@ -56,20 +65,81 @@ const writeReviewCards = (cards: Record<string, ReviewCardRecord>) => {
 
 const capInterval = (days: number) => Math.min(MAX_INTERVAL_DAYS, Math.max(1, Math.round(days)));
 
-const staggerOffsetDays = (index: number, total: number) => {
+/** Evenly spread `total` cards across days 0 … REVIEW_NEW_CARD_STAGGER_DAYS - 1. */
+export const staggerNewCardOffsetDays = (index: number, total: number) => {
   if (total <= 1 || REVIEW_NEW_CARD_STAGGER_DAYS <= 1) return 0;
   return Math.floor((index * (REVIEW_NEW_CARD_STAGGER_DAYS - 1)) / (total - 1));
 };
 
+const stableScheduleJitterDays = (cardId: string) => {
+  if (REVIEW_SCHEDULE_JITTER_DAYS <= 0) return 0;
+  let hash = 0;
+  for (let index = 0; index < cardId.length; index += 1) {
+    hash = (hash * 31 + cardId.charCodeAt(index)) | 0;
+  }
+  return Math.abs(hash) % (REVIEW_SCHEDULE_JITTER_DAYS + 1);
+};
+
+const spreadNewCardRecordsOverWindow = (records: ReviewCardRecord[], today: string) => {
+  if (records.length <= 1) return false;
+
+  shuffle(records).forEach((record, index) => {
+    record.dueAt = addDays(today, staggerNewCardOffsetDays(index, records.length));
+  });
+  return true;
+};
+
+/** When review is skipped, new cards pile onto today — spread that backlog across the week. */
+const rebalanceOverdueNewCards = (
+  cards: Record<string, ReviewCardRecord>,
+  eligibleCardIds: Set<string>,
+  today: string,
+) => {
+  const overdueNew = Object.values(cards).filter(
+    (record) => eligibleCardIds.has(record.cardId) && record.state === "new" && record.dueAt <= today,
+  );
+  if (overdueNew.length <= 1) return false;
+  return spreadNewCardRecordsOverWindow(overdueNew, today);
+};
+
 export const isLessonReviewEligible = (lesson: Lesson, completedStepIds: string[]) => isLessonComplete(lesson, completedStepIds);
 
+const getSectionTestStepId = (lessonId: string, section: SectionKind) =>
+  section === "nouns"
+    ? `${lessonId}-noun-test`
+    : section === "verbs"
+      ? `${lessonId}-verb-test`
+      : `${lessonId}-phrase-test`;
+
+/** A section enters daily review once its vocabulary test is done, or when the whole lesson is finished. */
+export const isSectionReviewEligible = (lessonId: string, section: SectionKind, completedStepIds: string[]) => {
+  if (isLessonFinalComplete(lessonId, completedStepIds)) return true;
+
+  const lesson = lessons.find((item) => item.id === lessonId);
+  if (lesson) return isSectionReadyForFinal(lesson, section, completedStepIds);
+
+  return completedStepIds.includes(getSectionTestStepId(lessonId, section));
+};
+
+export const isReviewCardEligible = (card: ReviewableCard, completedStepIds: string[]) =>
+  isSectionReviewEligible(card.lessonId, card.section, completedStepIds);
+
+const getEligibleLessonCards = (
+  lesson: Lesson,
+  completedStepIds: string[],
+  getCardsForLesson: (lesson: Lesson) => ReviewableCard[],
+) => getCardsForLesson(lesson).filter((card) => isReviewCardEligible({ ...card, lessonId: lesson.id }, completedStepIds));
+
 const isCardHard = (card: ReviewableCard, lesson: Lesson) => {
-  if (card.section === "nouns") return lesson.nouns.some((item) => item.id === card.id && item.hard);
+  if (card.section === "nouns") {
+    const familyId = getNounFamilyIdFromCardId(card.id);
+    return lesson.nouns.some((item) => item.id === familyId && item.hard);
+  }
   if (card.section === "phrases") return lesson.phrases.some((item) => item.id === card.id && item.hard);
-  const verb = lesson.verbs.find((item) => card.id.startsWith(`${item.id}-`));
-  if (!verb || !card.label) return false;
-  const form = labelToVerbForm(card.label);
-  return form ? Boolean(verb.hardForms?.[form]) : false;
+  const familyId = getVerbFamilyIdFromCardId(card.id);
+  const verb = lesson.verbs.find((item) => item.id === familyId);
+  if (!verb?.hardForms) return false;
+  return Object.values(verb.hardForms).some(Boolean);
 };
 
 const seedReviewCard = (card: ReviewableCard, lesson: Lesson, today: string, startOffsetDays = 0): ReviewCardRecord => ({
@@ -83,6 +153,49 @@ const seedReviewCard = (card: ReviewableCard, lesson: Lesson, today: string, sta
   lapses: 0,
 });
 
+export const resolveReviewableCard = (card: ReviewableCard, lesson: Lesson): ReviewableCard => {
+  if (card.section === "verbs") {
+    const representative = getVerbFamilyReviewRepresentative(lesson, card.id);
+    if (!representative) return card;
+
+    return {
+      id: representative.id,
+      lessonId: card.lessonId,
+      section: "verbs",
+      label: representative.label,
+    };
+  }
+
+  if (card.section === "nouns") {
+    const representative = getNounFamilyReviewRepresentative(lesson, card.id);
+    if (!representative) return card;
+
+    return {
+      id: representative.id,
+      lessonId: card.lessonId,
+      section: "nouns",
+      label: representative.label,
+    };
+  }
+
+  return card;
+};
+
+const mergeFamilyReviewRecords = (
+  records: ReviewCardRecord[],
+  representativeId: string,
+  lessonId: string,
+): ReviewCardRecord => {
+  const primary = [...records].sort((left, right) => left.dueAt.localeCompare(right.dueAt))[0]!;
+  return {
+    ...primary,
+    cardId: representativeId,
+    lessonId,
+    lapses: Math.max(...records.map((record) => record.lapses)),
+    ease: Math.min(...records.map((record) => record.ease)),
+  };
+};
+
 /** One-time reset so existing users pick up staggered seeding and the 30-day max interval. */
 export const applyStaggeredReviewScheduleMigration = () => {
   if (window.localStorage.getItem(STAGGERED_REVIEW_SCHEDULE_MIGRATION_KEY)) return;
@@ -91,53 +204,140 @@ export const applyStaggeredReviewScheduleMigration = () => {
   window.localStorage.setItem(STAGGERED_REVIEW_SCHEDULE_MIGRATION_KEY, "1");
 };
 
-/** Re-stagger cards still in the new state using the shorter spread window. */
-export const applyShorterNewCardStaggerMigration = (
+/** Merge legacy per-form verb review records into one schedule per family. */
+export const applyVerbFamilyReviewMigration = (allLessons: Lesson[]) => {
+  if (window.localStorage.getItem(VERB_FAMILY_REVIEW_MIGRATION_KEY)) return;
+
+  const cards = readReviewCards();
+  let changed = false;
+
+  for (const lesson of allLessons) {
+    const verbCards = getCachedLessonExposureCards(lesson).filter((card) => card.section === "verbs");
+    const prep = prepareVerbBatchReviewTestCards(verbCards);
+
+    for (const representative of prep.cards) {
+      const familyId = getVerbFamilyIdFromCardId(representative.id);
+      const formIds = verbCards
+        .filter((card) => getVerbFamilyIdFromCardId(card.id) === familyId)
+        .map((card) => card.id);
+      const familyRecords = formIds.map((formId) => cards[formId]).filter(Boolean);
+      if (familyRecords.length === 0) continue;
+
+      cards[representative.id] = mergeFamilyReviewRecords(familyRecords, representative.id, lesson.id);
+      changed = true;
+
+      for (const formId of formIds) {
+        if (formId === representative.id) continue;
+        delete cards[formId];
+      }
+    }
+  }
+
+  if (changed) writeReviewCards(cards);
+  window.localStorage.setItem(VERB_FAMILY_REVIEW_MIGRATION_KEY, "1");
+};
+
+/** Merge legacy per-form noun review records into one schedule per singular/plural family. */
+export const applyNounFamilyReviewMigration = (allLessons: Lesson[]) => {
+  if (window.localStorage.getItem(NOUN_FAMILY_REVIEW_MIGRATION_KEY)) return;
+
+  const cards = readReviewCards();
+  let changed = false;
+
+  for (const lesson of allLessons) {
+    const nounCards = getCachedLessonExposureCards(lesson).filter((card) => card.section === "nouns");
+    const prep = prepareNounBatchReviewTestCards(nounCards);
+
+    for (const representative of prep.cards) {
+      const familyId = getNounFamilyIdFromCardId(representative.id);
+      const formIds = nounCards
+        .filter((card) => getNounFamilyIdFromCardId(card.id) === familyId)
+        .map((card) => card.id);
+      const legacyIds = lesson.nouns
+        .filter((item) => item.id === familyId || formIds.includes(`${item.id}-singular`) || formIds.includes(`${item.id}-plural`))
+        .map((item) => item.id);
+      const relatedIds = [...new Set([...formIds, ...legacyIds])];
+      const familyRecords = relatedIds.map((formId) => cards[formId]).filter(Boolean);
+      if (familyRecords.length === 0) continue;
+
+      cards[representative.id] = mergeFamilyReviewRecords(familyRecords, representative.id, lesson.id);
+      changed = true;
+
+      for (const formId of relatedIds) {
+        if (formId === representative.id) continue;
+        delete cards[formId];
+      }
+    }
+  }
+
+  if (changed) writeReviewCards(cards);
+  window.localStorage.setItem(NOUN_FAMILY_REVIEW_MIGRATION_KEY, "1");
+};
+
+/** One-time spread of never-reviewed new cards globally across a week (fixes backlog pile-ups). */
+export const applyGlobalNewCardStaggerMigration = (
   allLessons: Lesson[],
   completedStepIds: string[],
   getCardsForLesson: (lesson: Lesson) => ReviewableCard[],
 ) => {
-  if (window.localStorage.getItem(SHORTER_NEW_CARD_STAGGER_MIGRATION_KEY)) return;
+  if (window.localStorage.getItem(GLOBAL_NEW_CARD_STAGGER_MIGRATION_KEY)) return;
 
   const today = todayKey();
   const cards = readReviewCards();
-  let changed = false;
+  const eligibleCardIds = new Set<string>();
+  const newRecords: ReviewCardRecord[] = [];
 
   for (const lesson of allLessons) {
-    if (!isLessonReviewEligible(lesson, completedStepIds)) continue;
-
-    const lessonCards = getCardsForLesson(lesson);
-    const newCards = lessonCards.filter((card) => cards[card.id]?.state === "new");
-    newCards.forEach((card, index) => {
-      const record = cards[card.id]!;
-      const dueAt = addDays(today, staggerOffsetDays(index, newCards.length));
-      if (record.dueAt !== dueAt) {
-        cards[card.id] = { ...record, dueAt };
-        changed = true;
+    for (const card of getEligibleLessonCards(lesson, completedStepIds, getCardsForLesson)) {
+      eligibleCardIds.add(card.id);
+      const record = cards[card.id];
+      if (record?.state === "new" && !record.lastReviewedAt) {
+        newRecords.push(record);
       }
-    });
+    }
   }
 
-  window.localStorage.setItem(SHORTER_NEW_CARD_STAGGER_MIGRATION_KEY, "1");
-  if (changed) writeReviewCards(cards);
+  if (spreadNewCardRecordsOverWindow(newRecords, today)) {
+    writeReviewCards(cards);
+  }
+
+  window.localStorage.setItem(GLOBAL_NEW_CARD_STAGGER_MIGRATION_KEY, "1");
 };
+
+/** @deprecated Use applyGlobalNewCardStaggerMigration. Kept so older migration keys stay satisfied. */
+export const applyShorterNewCardStaggerMigration = (
+  _allLessons: Lesson[],
+  _completedStepIds: string[],
+  _getCardsForLesson: (lesson: Lesson) => ReviewableCard[],
+) => {};
 
 export const syncReviewPool = (allLessons: Lesson[], completedStepIds: string[], getCardsForLesson: (lesson: Lesson) => ReviewableCard[]) => {
   const today = todayKey();
   const cards = readReviewCards();
-  let changed = false;
+  const eligibleCardIds = new Set<string>();
+  const missing: { card: ReviewableCard; lesson: Lesson }[] = [];
 
   for (const lesson of allLessons) {
-    if (!isLessonReviewEligible(lesson, completedStepIds)) continue;
+    for (const card of getEligibleLessonCards(lesson, completedStepIds, getCardsForLesson)) {
+      eligibleCardIds.add(card.id);
+      if (!cards[card.id]) {
+        missing.push({ card: { ...card, lessonId: lesson.id }, lesson });
+      }
+    }
+  }
 
-    const lessonCards = getCardsForLesson(lesson);
-    const missingCards = lessonCards.filter((card) => !cards[card.id]);
-    missingCards.forEach((card, index) => {
-      const startOffsetDays = staggerOffsetDays(index, missingCards.length);
-      const seeded = seedReviewCard({ ...card, lessonId: lesson.id }, lesson, today, startOffsetDays);
-      cards[card.id] = seeded;
-      changed = true;
+  let changed = false;
+
+  if (missing.length > 0) {
+    shuffle(missing).forEach(({ card, lesson }, index) => {
+      const startOffsetDays = staggerNewCardOffsetDays(index, missing.length);
+      cards[card.id] = seedReviewCard(card, lesson, today, startOffsetDays);
     });
+    changed = true;
+  }
+
+  if (rebalanceOverdueNewCards(cards, eligibleCardIds, today)) {
+    changed = true;
   }
 
   if (changed) writeReviewCards(cards);
@@ -153,7 +353,7 @@ const scheduleLearningSuccess = (record: ReviewCardRecord, today: string): Revie
       state: "review",
       learningStep: 0,
       intervalDays,
-      dueAt: addDays(today, intervalDays),
+      dueAt: addDays(today, intervalDays + stableScheduleJitterDays(record.cardId)),
       ease: record.ease,
       lastReviewedAt: today,
     };
@@ -165,7 +365,7 @@ const scheduleLearningSuccess = (record: ReviewCardRecord, today: string): Revie
     state: record.state === "new" ? "learning" : record.state,
     learningStep: nextStep,
     intervalDays,
-    dueAt: addDays(today, intervalDays),
+    dueAt: addDays(today, intervalDays + stableScheduleJitterDays(record.cardId)),
     lastReviewedAt: today,
   };
 };
@@ -177,7 +377,7 @@ const scheduleReviewSuccess = (record: ReviewCardRecord, today: string): ReviewC
     state: "review",
     intervalDays: nextInterval,
     ease: Math.min(record.ease + 0.05, 3),
-    dueAt: addDays(today, nextInterval),
+    dueAt: addDays(today, nextInterval + stableScheduleJitterDays(record.cardId)),
     lastReviewedAt: today,
   };
 };
@@ -208,12 +408,12 @@ export const gradeReviewCard = (cardId: string, knewIt: boolean) => {
 };
 
 export const recordMemorizationMiss = (card: ReviewableCard, lesson: Lesson, completedStepIds: string[]) => {
-  if (!isLessonReviewEligible(lesson, completedStepIds)) return;
-
+  const reviewCard = resolveReviewableCard(card, lesson);
+  if (!isReviewCardEligible({ ...reviewCard, lessonId: lesson.id }, completedStepIds)) return;
   const today = todayKey();
   const cards = readReviewCards();
-  const existing = cards[card.id] ?? seedReviewCard({ ...card, lessonId: lesson.id }, lesson, today);
-  cards[card.id] = scheduleMiss(existing, today);
+  const existing = cards[reviewCard.id] ?? seedReviewCard({ ...reviewCard, lessonId: lesson.id }, lesson, today);
+  cards[reviewCard.id] = scheduleMiss(existing, today);
   writeReviewCards(cards);
 };
 
@@ -222,8 +422,7 @@ const buildEligibleCardIndex = (allLessons: Lesson[], completedStepIds: string[]
   const cardById = new Map<string, ReviewableCard>();
 
   for (const lesson of allLessons) {
-    if (!isLessonReviewEligible(lesson, completedStepIds)) continue;
-    for (const card of getCardsForLesson(lesson)) {
+    for (const card of getEligibleLessonCards(lesson, completedStepIds, getCardsForLesson)) {
       cardById.set(card.id, { ...card, lessonId: lesson.id });
     }
   }

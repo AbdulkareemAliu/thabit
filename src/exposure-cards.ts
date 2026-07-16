@@ -1,7 +1,16 @@
-import { getNounBatches, getVerbBatches } from "./batching";
+import {
+  buildNounBatchStructure,
+  countNounFamilyUnits,
+  getNounBatchUnitCounts,
+  getNounBatches,
+  getVerbBatches,
+  isNounPluralItem,
+  isNounStemGroupWithPlural,
+} from "./batching";
+import { annotateEnglishCollisions } from "./english-cue";
 import { PHRASE_BATCH_SIZE } from "./config";
 import { getBatchSizes } from "./data";
-import type { ExposureCard, Lesson, SectionKind, VerbFamily, VerbFormKey } from "./types";
+import type { ExposureCard, Lesson, NounItem, SectionKind, VerbFamily, VerbFormKey, NounFormKey } from "./types";
 
 export const vocabularyImageUrl = (lesson: Lesson, relativePath?: string) => {
   if (!relativePath) return undefined;
@@ -34,6 +43,8 @@ export const VERB_FORM_ARABIC_LABELS: Record<VerbFormKey, string> = {
   activeParticiple: "اسم فاعل",
 };
 
+export const VERB_HARF_ARABIC_LABEL = "الحرف";
+
 const VERB_FORM_SPECS = (Object.keys(VERB_FORM_ARABIC_LABELS) as VerbFormKey[]).map((key) => ({
   key,
   label: VERB_FORM_ARABIC_LABELS[key],
@@ -64,11 +75,113 @@ const VERB_FORM_SUFFIX_PATTERN = /-(past|present|command|masdar|passive|activePa
 
 export const getVerbFamilyIdFromCardId = (cardId: string) => cardId.replace(VERB_FORM_SUFFIX_PATTERN, "");
 
-export const getVerbFamilyBrowseMeaning = (verb: VerbFamily) => stripVerbFormSuffix(normalizeVerbFormEnglish(verb.meaning));
+const getVerbFamilyPastForm = (forms: ExposureCard[]) =>
+  forms.find((form) => form.id.endsWith("-past")) ?? forms[0];
+
+const formatVerbFamilyEnglishWithHarf = (english: string, harf?: string) => {
+  const stem = stripVerbFormSuffix(normalizeVerbFormEnglish(english));
+  if (!stem) return "";
+  return harf ? `${stem} · ${harf}` : stem;
+};
+
+export const getVerbFamilyHarf = (forms: ExposureCard[]) => forms.find((form) => form.harf)?.harf;
+
+export const getVerbFamilyEnglishStemLabel = (forms: ExposureCard[]) => {
+  const representative = getVerbFamilyPastForm(forms);
+  const english = representative?.english?.trim();
+  return english ? stripVerbFormSuffix(normalizeVerbFormEnglish(english)) : "";
+};
+
+export const getVerbFamilyBrowseMeaning = (verb: VerbFamily) =>
+  formatVerbFamilyEnglishWithHarf(verb.meaning, verb.harf);
 
 export const getVerbFamilyMeaningLabel = (forms: ExposureCard[]) => {
-  const english = forms[0]?.english?.trim();
-  return english ? stripVerbFormSuffix(english) : "";
+  const representative = getVerbFamilyPastForm(forms);
+  const english = representative?.english?.trim();
+  if (!english) return "";
+  return formatVerbFamilyEnglishWithHarf(english, getVerbFamilyHarf(forms));
+};
+
+/** Map a verb-form index to the paradigm grid cell index (skips the informational harf cell). */
+export const verbFormIndexToParadigmCellIndex = (forms: ExposureCard[], formIndex: number) => {
+  if (formIndex < 0) return -1;
+  const harf = getVerbFamilyHarf(forms);
+  if (!harf) return formIndex;
+  return formIndex === 0 ? 0 : formIndex + 1;
+};
+
+export type VerbBrowseCell =
+  | { kind: "form"; key: VerbFormKey; arabic: string; imageUrl?: string; weak?: boolean }
+  | { kind: "harf"; arabic: string };
+
+export const getVerbBrowseCells = (verb: VerbFamily): VerbBrowseCell[] => {
+  const cells: VerbBrowseCell[] = [];
+  for (const key of VERB_FORM_ORDER) {
+    const arabic = verb[key];
+    if (typeof arabic !== "string" || !arabic) continue;
+    cells.push({
+      kind: "form",
+      key,
+      arabic,
+      imageUrl: verb.images?.[key],
+      weak: verb.hardForms?.[key],
+    });
+    if (key === "past" && verb.harf) {
+      cells.push({ kind: "harf", arabic: verb.harf });
+    }
+  }
+  return cells;
+};
+
+export type VerbParadigmCell = {
+  id: string;
+  label: string;
+  arabic: string;
+  imageUrl?: string;
+};
+
+export const buildVerbParadigmCells = (forms: ExposureCard[]): VerbParadigmCell[] => {
+  const harf = getVerbFamilyHarf(forms);
+  const cells: VerbParadigmCell[] = [];
+  for (const form of forms) {
+    cells.push({
+      id: form.id,
+      label: form.label ?? "",
+      arabic: form.arabic,
+      imageUrl: form.imageUrl,
+    });
+    if (form.id.endsWith("-past") && harf) {
+      cells.push({
+        id: `${form.id}-harf`,
+        label: VERB_HARF_ARABIC_LABEL,
+        arabic: harf,
+      });
+    }
+  }
+  return cells;
+};
+
+export const getFamilyMeaningLabel = (forms: ExposureCard[]) =>
+  forms[0]?.section === "nouns" ? getNounFamilyMeaningLabel(forms) : getVerbFamilyMeaningLabel(forms);
+
+export const getBatchFamilyId = (card: ExposureCard) =>
+  card.section === "verbs"
+    ? getVerbFamilyIdFromCardId(card.id)
+    : card.section === "nouns" && isNounFormCard(card)
+      ? getNounFamilyIdFromCardId(card.id)
+      : card.id;
+
+export const resolveFamilyFormsForCard = (
+  card: ExposureCard,
+  familyFormsByCardId?: Map<string, ExposureCard[]>,
+): ExposureCard[] | undefined => {
+  if (!familyFormsByCardId) return undefined;
+  const direct = familyFormsByCardId.get(card.id);
+  if (direct) return direct;
+  for (const forms of familyFormsByCardId.values()) {
+    if (forms.some((form) => form.id === card.id)) return forms;
+  }
+  return undefined;
 };
 
 export const getVerbFamilyFormsForCard = (allCards: ExposureCard[], card: ExposureCard): ExposureCard[] | null => {
@@ -87,6 +200,150 @@ export const getVerbFamilyFormsForCard = (allCards: ExposureCard[], card: Exposu
 export type VerbFamilyTestPrep = {
   cards: ExposureCard[];
   familyFormsByCardId: Map<string, ExposureCard[]>;
+};
+
+export type FamilyTestPrep = VerbFamilyTestPrep;
+
+export const NOUN_FORM_ARABIC_LABELS: Record<NounFormKey, string> = {
+  singular: "المفرد",
+  plural: "الجمع",
+};
+
+const NOUN_FORM_SPECS = (Object.keys(NOUN_FORM_ARABIC_LABELS) as NounFormKey[]).map((key) => ({
+  key,
+  label: NOUN_FORM_ARABIC_LABELS[key],
+}));
+
+export const NOUN_FORM_ORDER: NounFormKey[] = NOUN_FORM_SPECS.map(({ key }) => key);
+
+const NOUN_FORM_SUFFIX_PATTERN = /-(singular|plural)$/;
+
+export const isNounFormCard = (card: ExposureCard) =>
+  card.section === "nouns" && NOUN_FORM_SUFFIX_PATTERN.test(card.id);
+
+export const getNounFamilyIdFromCardId = (cardId: string) => cardId.replace(NOUN_FORM_SUFFIX_PATTERN, "");
+
+export const getNounFamilyMeaningLabel = (forms: ExposureCard[]) => {
+  const singular = forms.find((form) => form.id.endsWith("-singular")) ?? forms[0];
+  if (!singular) return "";
+  return stripVerbFormSuffix(singular.english);
+};
+
+const nounUnitToExposureCards = (unit: NounItem[], lesson: Lesson, batchIndex: number): ExposureCard[] => {
+  if (isNounStemGroupWithPlural(unit)) {
+    const singular = unit.find((item) => !isNounPluralItem(item)) ?? unit[0]!;
+    const plural = unit.find(isNounPluralItem);
+    const familyId = singular.id;
+    const cards: ExposureCard[] = [
+      {
+        id: `${familyId}-singular`,
+        arabic: singular.arabic,
+        english: singular.english,
+        section: "nouns",
+        batchIndex,
+        label: NOUN_FORM_ARABIC_LABELS.singular,
+        imageUrl: vocabularyImageUrl(lesson, singular.arabicImage),
+      },
+    ];
+    if (plural) {
+      cards.push({
+        id: `${familyId}-plural`,
+        arabic: plural.arabic,
+        english: plural.english,
+        section: "nouns",
+        batchIndex,
+        label: NOUN_FORM_ARABIC_LABELS.plural,
+        imageUrl: vocabularyImageUrl(lesson, plural.arabicImage),
+      });
+    }
+    return cards;
+  }
+
+  const noun = unit[0]!;
+  return [
+    {
+      id: noun.id,
+      arabic: noun.arabic,
+      english: noun.english,
+      section: "nouns",
+      batchIndex,
+      imageUrl: vocabularyImageUrl(lesson, noun.arabicImage),
+    },
+  ];
+};
+
+const buildNounFamilyTestUnits = (nounCards: ExposureCard[], pool: ExposureCard[]): VerbFamilyTestPrep => {
+  const familyIds = [...new Set(nounCards.filter(isNounFormCard).map((card) => getNounFamilyIdFromCardId(card.id)))];
+  const cards: ExposureCard[] = [];
+  const familyFormsByCardId = new Map<string, ExposureCard[]>();
+
+  for (const familyId of familyIds) {
+    const forms = NOUN_FORM_SPECS.flatMap(({ key }) => {
+      const formCard = pool.find(
+        (item) => item.section === "nouns" && getNounFamilyIdFromCardId(item.id) === familyId && item.id.endsWith(`-${key}`),
+      );
+      return formCard ? [formCard] : [];
+    });
+    if (forms.length === 0) continue;
+    const representative = forms[0]!;
+    cards.push(representative);
+    familyFormsByCardId.set(representative.id, forms);
+  }
+
+  const standaloneCards = nounCards.filter((card) => !isNounFormCard(card));
+  return {
+    cards: [...standaloneCards, ...cards],
+    familyFormsByCardId,
+  };
+};
+
+export const prepareNounBatchReviewTestCards = (cards: ExposureCard[]): VerbFamilyTestPrep =>
+  buildNounFamilyTestUnits(
+    cards.filter((card) => card.section === "nouns"),
+    cards,
+  );
+
+export const getNounFamilyReviewRepresentative = (lesson: Lesson, formCardId: string): ExposureCard | undefined => {
+  const familyId = getNounFamilyIdFromCardId(formCardId);
+  const prep = prepareNounBatchReviewTestCards(
+    getCachedLessonExposureCards(lesson).filter(
+      (card) => card.section === "nouns" && getNounFamilyIdFromCardId(card.id) === familyId,
+    ),
+  );
+  return prep.cards.find((card) => getNounFamilyIdFromCardId(card.id) === familyId);
+};
+
+export const groupNounCardsIntoFamilies = (cards: ExposureCard[]): ExposureCard[][] => {
+  const units: ExposureCard[][] = [];
+
+  for (const card of cards) {
+    const familyId = isNounFormCard(card) ? getNounFamilyIdFromCardId(card.id) : null;
+    const last = units.at(-1);
+    const lastFamilyId =
+      last?.[0] && isNounFormCard(last[0]) ? getNounFamilyIdFromCardId(last[0].id) : null;
+
+    if (familyId && lastFamilyId === familyId) {
+      last!.push(card);
+      continue;
+    }
+
+    units.push([card]);
+  }
+
+  return units.map((unit) => {
+    if (unit.length <= 1 || !isNounFormCard(unit[0]!)) return unit;
+    return NOUN_FORM_SPECS.flatMap(({ key }) => {
+      const form = unit.find((item) => item.id.endsWith(`-${key}`));
+      return form ? [form] : [];
+    });
+  });
+};
+
+export const groupExposureCardsIntoExposureUnits = (cards: ExposureCard[]): ExposureCard[][] => {
+  if (cards.length === 0) return [];
+  if (cards[0]?.section === "verbs") return groupExposureCardsIntoVerbFamilies(cards);
+  if (cards[0]?.section === "nouns") return groupNounCardsIntoFamilies(cards);
+  return cards.map((card) => [card]);
 };
 
 const buildVerbFamilyTestUnits = (verbCards: ExposureCard[], pool: ExposureCard[]): VerbFamilyTestPrep => {
@@ -120,15 +377,29 @@ export const prepareVerbSectionTestCards = (cards: ExposureCard[]): VerbFamilyTe
 export const prepareVerbBatchReviewTestCards = (cards: ExposureCard[]): VerbFamilyTestPrep =>
   prepareVerbSectionTestCards(cards);
 
+export const getVerbFamilyReviewRepresentative = (lesson: Lesson, formCardId: string): ExposureCard | undefined => {
+  const familyId = getVerbFamilyIdFromCardId(formCardId);
+  const prep = prepareVerbBatchReviewTestCards(
+    getCachedLessonExposureCards(lesson).filter(
+      (card) => card.section === "verbs" && getVerbFamilyIdFromCardId(card.id) === familyId,
+    ),
+  );
+  return prep.cards.find((card) => getVerbFamilyIdFromCardId(card.id) === familyId);
+};
+
 export const prepareLessonTestWritingCards = (cards: ExposureCard[]): VerbFamilyTestPrep => {
-  const nonVerbs = cards.filter((card) => card.section !== "verbs");
+  const phrases = cards.filter((card) => card.section === "phrases");
+  const nounPrep = buildNounFamilyTestUnits(
+    cards.filter((card) => card.section === "nouns"),
+    cards,
+  );
   const verbPrep = buildVerbFamilyTestUnits(
     cards.filter((card) => card.section === "verbs"),
     cards,
   );
   return {
-    cards: [...nonVerbs, ...verbPrep.cards],
-    familyFormsByCardId: verbPrep.familyFormsByCardId,
+    cards: [...phrases, ...nounPrep.cards, ...verbPrep.cards],
+    familyFormsByCardId: new Map([...nounPrep.familyFormsByCardId, ...verbPrep.familyFormsByCardId]),
   };
 };
 
@@ -223,6 +494,41 @@ export const getBatchRecognitionCards = (cards: ExposureCard[]) =>
 
 export const getBatchRecognitionCount = (cards: ExposureCard[]) => getBatchRecognitionCards(cards).length;
 
+/** Batch study/test units: verb and noun batches collapse to one card per family; other sections pass through. */
+export const prepareBatchStudyCards = (cards: ExposureCard[]): VerbFamilyTestPrep => {
+  if (cards.length === 0) return { cards, familyFormsByCardId: new Map() };
+  if (cards[0]?.section === "verbs") {
+    return prepareVerbBatchReviewTestCards(cards);
+  }
+  if (cards[0]?.section === "nouns") {
+    return prepareNounBatchReviewTestCards(cards);
+  }
+  return { cards, familyFormsByCardId: new Map() };
+};
+
+export const getBatchStudyCards = (cards: ExposureCard[]) => prepareBatchStudyCards(cards).cards;
+
+export const getBatchStudyCardCount = (cards: ExposureCard[]) => getBatchStudyCards(cards).length;
+
+export const getLessonVerbFamilyCards = (lessonCards: ExposureCard[]): ExposureCard[] =>
+  prepareVerbBatchReviewTestCards(lessonCards.filter((card) => card.section === "verbs")).cards;
+
+export const getLessonNounFamilyCards = (lessonCards: ExposureCard[]): ExposureCard[] =>
+  prepareNounBatchReviewTestCards(lessonCards.filter((card) => card.section === "nouns")).cards;
+
+export const getNounFamilyFormsForCard = (allCards: ExposureCard[], card: ExposureCard): ExposureCard[] | null => {
+  if (card.section !== "nouns" || !isNounFormCard(card)) return null;
+  const familyId = getNounFamilyIdFromCardId(card.id);
+  const familyCards = allCards.filter(
+    (item) => item.section === "nouns" && getNounFamilyIdFromCardId(item.id) === familyId,
+  );
+  const forms = NOUN_FORM_SPECS.flatMap(({ key }) => {
+    const formCard = familyCards.find((item) => item.id.endsWith(`-${key}`));
+    return formCard ? [formCard] : [];
+  });
+  return forms.length > 0 ? forms : null;
+};
+
 const verbFamilyToExposureCards = (
   verb: VerbFamily,
   lesson: Lesson,
@@ -240,6 +546,7 @@ const verbFamilyToExposureCards = (
         batchIndex,
         label,
         imageUrl: vocabularyImageUrl(lesson, verb.images?.[key]),
+        harf: verb.harf,
       },
     ];
   });
@@ -255,15 +562,8 @@ const mapPhraseBatches = <T,>(items: T[], mapper: (item: T, batchIndex: number) 
 };
 
 export const buildLessonExposureCards = (lesson: Lesson): ExposureCard[] => [
-  ...getNounBatches(lesson.nouns).flatMap((batch, batchIndex) =>
-    batch.map((noun) => ({
-      id: noun.id,
-      arabic: noun.arabic,
-      english: noun.english,
-      section: "nouns" as const,
-      batchIndex,
-      imageUrl: vocabularyImageUrl(lesson, noun.arabicImage),
-    })),
+  ...buildNounBatchStructure(lesson.nouns).unitBatches.flatMap((batch, batchIndex) =>
+    batch.flatMap((unit) => nounUnitToExposureCards(unit, lesson, batchIndex)),
   ),
   ...mapPhraseBatches(lesson.phrases, (phrase, batchIndex) => [
     {
@@ -286,7 +586,7 @@ export const getCachedLessonExposureCards = (lesson: Lesson): ExposureCard[] => 
   const cached = lessonExposureCardsCache.get(lesson.id);
   if (cached) return cached;
 
-  const cards = buildLessonExposureCards(lesson);
+  const cards = annotateEnglishCollisions(buildLessonExposureCards(lesson));
   lessonExposureCardsCache.set(lesson.id, cards);
   return cards;
 };
@@ -348,17 +648,83 @@ export type VocabularyBrowseRow = {
   batchIndex: number;
 };
 
-export const buildNounBrowseRows = (lesson: Lesson): VocabularyBrowseRow[] =>
-  getNounBatches(lesson.nouns).flatMap((batch, batchIndex) =>
-    batch.map((noun) => ({
-      id: noun.id,
-      arabic: noun.arabic,
-      english: [noun.english, noun.plural].filter(Boolean).join(" · "),
-      imageUrl: vocabularyImageUrl(lesson, noun.arabicImage),
-      weak: noun.hard,
-      batchIndex,
-    })),
+export type NounBrowseForm = {
+  key: NounFormKey;
+  arabic: string;
+  english: string;
+  imageUrl?: string;
+  weak?: boolean;
+};
+
+export type NounBrowseFamily = {
+  id: string;
+  batchIndex: number;
+  meaning: string;
+  forms: NounBrowseForm[];
+  weak?: boolean;
+};
+
+export const buildNounBrowseFamilies = (lesson: Lesson): NounBrowseFamily[] =>
+  buildNounBatchStructure(lesson.nouns).unitBatches.flatMap((batch, batchIndex) =>
+    batch.map((unit) => {
+      if (isNounStemGroupWithPlural(unit)) {
+        const singular = unit.find((item) => !isNounPluralItem(item)) ?? unit[0]!;
+        const plural = unit.find(isNounPluralItem);
+        const forms: NounBrowseForm[] = [
+          {
+            key: "singular",
+            arabic: singular.arabic,
+            english: singular.english,
+            imageUrl: vocabularyImageUrl(lesson, singular.arabicImage),
+            weak: singular.hard,
+          },
+        ];
+        if (plural) {
+          forms.push({
+            key: "plural",
+            arabic: plural.arabic,
+            english: plural.english,
+            imageUrl: vocabularyImageUrl(lesson, plural.arabicImage),
+            weak: plural.hard,
+          });
+        }
+        return {
+          id: singular.id,
+          batchIndex,
+          meaning: stripVerbFormSuffix(singular.english),
+          forms,
+          weak: singular.hard || plural?.hard,
+        };
+      }
+      const noun = unit[0]!;
+      return {
+        id: noun.id,
+        batchIndex,
+        meaning: noun.english,
+        forms: [
+          {
+            key: "singular",
+            arabic: noun.arabic,
+            english: noun.english,
+            imageUrl: vocabularyImageUrl(lesson, noun.arabicImage),
+            weak: noun.hard,
+          },
+        ],
+        weak: noun.hard,
+      };
+    }),
   );
+
+/** @deprecated Use buildNounBrowseFamilies for browse UI. */
+export const buildNounBrowseRows = (lesson: Lesson): VocabularyBrowseRow[] =>
+  buildNounBrowseFamilies(lesson).map((family) => ({
+    id: family.id,
+    arabic: family.forms.map((form) => form.arabic).join(" · "),
+    english: family.meaning,
+    imageUrl: family.forms[0]?.imageUrl,
+    weak: family.weak,
+    batchIndex: family.batchIndex,
+  }));
 
 const buildPhraseBrowseRowsFromItems = (
   lesson: Lesson,

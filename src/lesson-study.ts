@@ -2,10 +2,14 @@ import { lessons } from "./data";
 import {
   getBatchExposureCards,
   getCachedLessonExposureCards,
+  getNounFamilyIdFromCardId,
   getSectionExposureCards,
+  getVerbFamilyIdFromCardId,
+  prepareNounBatchReviewTestCards,
   prepareVerbBatchReviewTestCards,
 } from "./exposure-cards";
 import type { ReviewableCard } from "./review";
+import { gradeReviewCard } from "./review";
 import {
   BATCH_REVIEW_WRITING_CONFIG,
   BATCH_TEST_WRITING_CONFIG,
@@ -19,8 +23,18 @@ export type WritingTestCardPrep = {
   familyFormsByCardId: Map<string, ExposureCard[]>;
 };
 
+export type DailyReviewStudyPrep = WritingTestCardPrep;
+
 export const usesVerbFamilyWritingTest = (step: LessonStep | undefined) =>
-  step?.section === "verbs" && (step.kind === "batch-review" || step.kind === "vocabulary-test");
+  step?.section === "verbs" &&
+  (step.kind === "batch" || step.kind === "batch-review" || step.kind === "vocabulary-test");
+
+export const usesNounFamilyWritingTest = (step: LessonStep | undefined) =>
+  step?.section === "nouns" &&
+  (step.kind === "batch" || step.kind === "batch-review" || step.kind === "vocabulary-test");
+
+export const usesFamilyWritingTest = (step: LessonStep | undefined) =>
+  usesVerbFamilyWritingTest(step) || usesNounFamilyWritingTest(step);
 
 export const toReviewableCard =
   (lessonId: string) =>
@@ -31,8 +45,18 @@ export const toReviewableCard =
     label: card.label,
   });
 
-export const getReviewableCardsForLesson = (lesson: Lesson) =>
-  getCachedLessonExposureCards(lesson).map(toReviewableCard(lesson.id));
+export const getReviewableCardsForLesson = (lesson: Lesson): ReviewableCard[] => {
+  const allCards = getCachedLessonExposureCards(lesson);
+  const phraseCards = allCards.filter((card) => card.section === "phrases");
+  const nounPrep = prepareNounBatchReviewTestCards(allCards.filter((card) => card.section === "nouns"));
+  const verbPrep = prepareVerbBatchReviewTestCards(allCards.filter((card) => card.section === "verbs"));
+
+  return [
+    ...phraseCards.map(toReviewableCard(lesson.id)),
+    ...nounPrep.cards.map(toReviewableCard(lesson.id)),
+    ...verbPrep.cards.map(toReviewableCard(lesson.id)),
+  ];
+};
 
 export const getVocabularyTestSection = (stepId: string): SectionKind | null =>
   stepId.endsWith("-noun-test")
@@ -61,6 +85,61 @@ export const resolveDailyReviewCards = (cards: ReviewableCard[]) => {
     .filter((card): card is ExposureCard => Boolean(card));
 };
 
+export const prepareDailyReviewStudyCards = (reviewableCards: ReviewableCard[]): DailyReviewStudyPrep => {
+  const lessonById = new Map(lessons.map((lesson) => [lesson.id, lesson]));
+  const verbFamilyIdsByLesson = new Map<string, Set<string>>();
+  const nounFamilyIdsByLesson = new Map<string, Set<string>>();
+
+  for (const card of reviewableCards) {
+    if (card.section === "verbs") {
+      const familyIds = verbFamilyIdsByLesson.get(card.lessonId) ?? new Set<string>();
+      familyIds.add(getVerbFamilyIdFromCardId(card.id));
+      verbFamilyIdsByLesson.set(card.lessonId, familyIds);
+      continue;
+    }
+    if (card.section === "nouns") {
+      const familyIds = nounFamilyIdsByLesson.get(card.lessonId) ?? new Set<string>();
+      familyIds.add(getNounFamilyIdFromCardId(card.id));
+      nounFamilyIdsByLesson.set(card.lessonId, familyIds);
+    }
+  }
+
+  const verbExposureCards: ExposureCard[] = [];
+  for (const [lessonId, familyIds] of verbFamilyIdsByLesson) {
+    const lesson = lessonById.get(lessonId);
+    if (!lesson) continue;
+    verbExposureCards.push(
+      ...getCachedLessonExposureCards(lesson).filter(
+        (card) => card.section === "verbs" && familyIds.has(getVerbFamilyIdFromCardId(card.id)),
+      ),
+    );
+  }
+
+  const nounExposureCards: ExposureCard[] = [];
+  for (const [lessonId, familyIds] of nounFamilyIdsByLesson) {
+    const lesson = lessonById.get(lessonId);
+    if (!lesson) continue;
+    nounExposureCards.push(
+      ...getCachedLessonExposureCards(lesson).filter(
+        (card) => card.section === "nouns" && familyIds.has(getNounFamilyIdFromCardId(card.id)),
+      ),
+    );
+  }
+
+  const verbPrep = prepareVerbBatchReviewTestCards(verbExposureCards);
+  const nounPrep = prepareNounBatchReviewTestCards(nounExposureCards);
+  const phraseCards = resolveDailyReviewCards(reviewableCards.filter((card) => card.section === "phrases"));
+
+  return {
+    cards: [...phraseCards, ...nounPrep.cards, ...verbPrep.cards],
+    familyFormsByCardId: new Map([...nounPrep.familyFormsByCardId, ...verbPrep.familyFormsByCardId]),
+  };
+};
+
+export const gradeDailyReviewPrompt = (promptCardId: string, knewIt: boolean) => {
+  gradeReviewCard(promptCardId, knewIt);
+};
+
 export const getStepContinueLabel = (step: LessonStep) =>
   step.kind === "batch" || step.kind === "batch-review" ? "Next step" : `Continue to ${step.title}`;
 
@@ -84,12 +163,26 @@ export const prepareWritingTestCardsForStep = (lesson: Lesson, stepId: string): 
   if (usesVerbFamilyWritingTest(step)) {
     return prepareVerbBatchReviewTestCards(cards);
   }
+  if (usesNounFamilyWritingTest(step)) {
+    return prepareNounBatchReviewTestCards(cards);
+  }
   return { cards, familyFormsByCardId: new Map() };
 };
 
-/** Per-form cards for the writing-test phase at the end of a single batch. */
-export const getWithinBatchWritingTestCards = (lesson: Lesson, stepId: string) => {
+/** Writing-test cards for a single batch (verb batches collapse to one prompt per family). */
+export const prepareWithinBatchWritingTestCards = (lesson: Lesson, stepId: string): WritingTestCardPrep => {
   const step = lesson.steps.find((item) => item.id === stepId);
-  if (step?.kind !== "batch") return [];
-  return getBatchExposureCards(lesson, stepId);
+  if (step?.kind !== "batch") return { cards: [], familyFormsByCardId: new Map() };
+
+  const cards = getBatchExposureCards(lesson, stepId);
+  if (usesVerbFamilyWritingTest(step)) {
+    return prepareVerbBatchReviewTestCards(cards);
+  }
+  if (usesNounFamilyWritingTest(step)) {
+    return prepareNounBatchReviewTestCards(cards);
+  }
+  return { cards, familyFormsByCardId: new Map() };
 };
+
+export const getWithinBatchWritingTestCards = (lesson: Lesson, stepId: string) =>
+  prepareWithinBatchWritingTestCards(lesson, stepId).cards;

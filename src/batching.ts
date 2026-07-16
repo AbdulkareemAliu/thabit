@@ -89,11 +89,57 @@ const packUnitsIntoBatches = <T,>(units: T[][], targetSize: number, shouldMergeS
   return batches;
 };
 
-export const getNounBatches = (nouns: NounItem[]): NounItem[][] => {
-  const stemGroups = groupConsecutiveByStem(nouns, (item) => item.english).map((group) => sortStemGroupByTags(group, (item) => item.english));
-  const units = stemGroups.flatMap((group) => chunkLargeStemGroup(group));
-  return packUnitsIntoBatches(units, NOUN_BATCH_SIZE, true);
+export const isNounPluralItem = (noun: NounItem) => parseEnglishStemAndTags(noun.english).tags.includes("p");
+
+export const isNounStemGroupWithPlural = (group: NounItem[]) =>
+  group.some(isNounPluralItem) && group.some((item) => !isNounPluralItem(item));
+
+const expandNounStemGroupToUnits = (group: NounItem[]): NounItem[][] => {
+  if (isNounStemGroupWithPlural(group)) return [group];
+  return group.map((item) => [item]);
 };
+
+const packNounUnitsIntoBatches = (units: NounItem[][]): NounItem[][][] => {
+  const batches: NounItem[][][] = [];
+  let currentUnits: NounItem[][] = [];
+
+  for (const unit of units) {
+    if (currentUnits.length > 0 && currentUnits.length + 1 > NOUN_BATCH_SIZE) {
+      batches.push(currentUnits);
+      currentUnits = [];
+    }
+    currentUnits.push(unit);
+  }
+
+  if (currentUnits.length > 0) batches.push(currentUnits);
+
+  const finalUnitCount = batches.at(-1)?.length ?? 0;
+  if (batches.length > 1 && finalUnitCount < MIN_NON_VERB_BATCH_SIZE) {
+    const trailingUnits = batches.pop() ?? [];
+    batches[batches.length - 1].push(...trailingUnits);
+  }
+
+  return batches;
+};
+
+export const buildNounBatchStructure = (nouns: NounItem[]) => {
+  const stemGroups = groupConsecutiveByStem(nouns, (item) => item.english).map((group) =>
+    sortStemGroupByTags(group, (item) => item.english),
+  );
+  const units = stemGroups.flatMap((group) =>
+    chunkLargeStemGroup(group).flatMap((chunk) => expandNounStemGroupToUnits(chunk)),
+  );
+  const unitBatches = packNounUnitsIntoBatches(units);
+  return { units, unitBatches };
+};
+
+export const getNounBatches = (nouns: NounItem[]): NounItem[][] =>
+  buildNounBatchStructure(nouns).unitBatches.map((batch) => batch.flat());
+
+export const countNounFamilyUnits = (nouns: NounItem[]) => buildNounBatchStructure(nouns).units.length;
+
+export const getNounBatchUnitCounts = (nouns: NounItem[]): number[] =>
+  buildNounBatchStructure(nouns).unitBatches.map((batch) => batch.length);
 
 export const getVerbBatches = (verbs: VerbFamily[]): VerbFamily[][] =>
   packUnitsIntoBatches(

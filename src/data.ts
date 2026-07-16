@@ -1,5 +1,5 @@
-import { getBatchReviewGroupSizes, MAX_BATCHES_WITHOUT_REVIEW } from "./batch-groups";
-import { getNounBatches, getVerbBatches, parseEnglishStemAndTags } from "./batching";
+import { getBatchReviewGroupSizes, MAX_BATCHES_WITHOUT_REVIEW, shouldIncludeSectionTest } from "./batch-groups";
+import { countNounFamilyUnits, getNounBatchUnitCounts, getVerbBatches, parseEnglishStemAndTags } from "./batching";
 import { countVerbFamilyForms, normalizeVerbFormEnglish } from "./exposure-cards";
 import { MIN_NON_VERB_BATCH_SIZE, NOUN_BATCH_SIZE, PHRASE_BATCH_SIZE, VERB_BATCH_SIZE } from "./config";
 import type { Lesson, LessonStep, NounItem, SectionKind, VerbFamily, VerbFormKey } from "./types";
@@ -242,33 +242,34 @@ const makeSectionBatchSteps = ({
 
 const makeSteps = ({ lessonId, nouns, verbs, phraseCount }: { lessonId: string; nouns: NounItem[]; verbs: VerbFamily[]; phraseCount: number }): Lesson["steps"] => {
   const steps: LessonStep[] = [];
-  const nounCount = nouns.length;
+  const nounCount = countNounFamilyUnits(nouns);
   const verbCount = verbs.length;
   const verbFormCount = verbs.reduce((sum, verb) => sum + countVerbFamilyForms(verb), 0);
   const verbBatches = getVerbBatches(verbs);
+  const nounBatchSizes = getNounBatchUnitCounts(nouns);
+  const phraseBatchSizes = getBatchSizes(phraseCount, PHRASE_BATCH_SIZE, true);
 
   steps.push(
     ...makeSectionBatchSteps({
       lessonId,
       title: "Noun",
       section: "nouns",
-      batchSizes: getNounBatches(nouns).map((batch) => batch.length),
+      batchSizes: nounBatchSizes,
     }),
   );
-  if (nounCount > 0) {
+  if (nounCount > 0 && shouldIncludeSectionTest(nounBatchSizes.length)) {
     steps.push({ id: `${lessonId}-noun-test`, title: "Noun Test", kind: "vocabulary-test", section: "nouns", status: "locked", itemCount: nounCount });
   }
 
   steps.push(
-    ...makeBatchSteps({
+    ...makeSectionBatchSteps({
       lessonId,
       title: "Phrase",
       section: "phrases",
-      count: phraseCount,
-      batchSize: PHRASE_BATCH_SIZE,
+      batchSizes: phraseBatchSizes,
     }),
   );
-  if (phraseCount > 0) {
+  if (phraseCount > 0 && shouldIncludeSectionTest(phraseBatchSizes.length)) {
     steps.push({ id: `${lessonId}-phrase-test`, title: "Phrase Test", kind: "vocabulary-test", section: "phrases", status: "locked", itemCount: phraseCount });
   }
 
@@ -280,8 +281,8 @@ const makeSteps = ({ lessonId, nouns, verbs, phraseCount }: { lessonId: string; 
       batchSizes: verbBatches.map((batch) => batch.length),
     }),
   );
-  if (verbCount > 0) {
-    steps.push({ id: `${lessonId}-verb-test`, title: "Verb Test", kind: "vocabulary-test", section: "verbs", status: "locked", itemCount: verbFormCount });
+  if (verbCount > 0 && shouldIncludeSectionTest(verbBatches.length)) {
+    steps.push({ id: `${lessonId}-verb-test`, title: "Verb Test", kind: "vocabulary-test", section: "verbs", status: "locked", itemCount: verbCount });
   }
 
   const totalCount = nounCount + verbCount + phraseCount;
@@ -362,6 +363,7 @@ export const lessons: Lesson[] = Object.values(byLesson)
           meaning: normalizeVerbFormEnglish(
             row.past_english || row.present_english || row.command_english || row.masdar_english || "Verb",
           ),
+          harf: row.harf_arabic?.trim() || row.harf?.trim() || undefined,
           past: row.past_arabic,
           present: row.present_arabic,
           passive: row.passive_arabic || undefined,

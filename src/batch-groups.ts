@@ -1,6 +1,9 @@
 /** Sections with this many batches or fewer skip batch-review steps entirely. */
 export const MAX_BATCHES_WITHOUT_REVIEW = 4;
 
+/** Single-batch sections skip the end-of-section vocabulary test. */
+export const shouldIncludeSectionTest = (batchCount: number) => batchCount > 1;
+
 /** Group sizes for batch-review steps (sum equals batch count when count > MAX_BATCHES_WITHOUT_REVIEW). */
 export const getBatchReviewGroupSizes = (batchCount: number): number[] => {
   if (batchCount <= MAX_BATCHES_WITHOUT_REVIEW) return [];

@@ -47,8 +47,100 @@ button {
     padding: 0.875rem 1rem;
 }
 
-.writing-flashcard-study {
+.study-phase-shell {
+    display: flex;
     min-height: 0;
+    flex: 1 1 0;
+    flex-direction: column;
+    overflow: hidden;
+}
+
+.writing-flashcard-study-shell {
+    display: flex;
+    min-height: 0;
+    flex: 1;
+    flex-direction: column;
+    overflow: hidden;
+}
+
+.writing-flashcard-study-shell .writing-flashcard-study {
+    min-height: 0;
+    flex: 1 1 auto;
+    overflow-x: hidden;
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+    overscroll-behavior: contain;
+}
+
+.writing-flashcard-study .writing-surface-host.writing-flashcard-surface {
+    flex: 0 0 auto;
+    overflow: visible;
+}
+
+.writing-flashcard-study .writing-flashcard-pad {
+    flex: 0 0 auto;
+    max-height: min(52dvh, 26rem);
+}
+
+.writing-flashcard-study .writing-flashcard-pad .writing-surface {
+    flex: 1 1 auto;
+    min-height: 10rem;
+    max-height: min(52dvh, 26rem);
+}
+
+.writing-flashcard-study .writing-flashcard-pad .writing-strips-scroll {
+    flex: 1 1 auto;
+    min-height: 10rem;
+    max-height: min(52dvh, 26rem);
+}
+
+.writing-flashcard-study .writing-flashcard-pad-revealed,
+.writing-flashcard-pad-revealed {
+    flex: 0 0 auto;
+    max-height: 7.5rem;
+    overflow: hidden;
+}
+
+.writing-flashcard-study .writing-flashcard-pad-revealed .writing-surface,
+.writing-flashcard-pad-revealed .writing-surface {
+    flex: 0 0 auto;
+    min-height: 0;
+    max-height: 7.5rem;
+    overflow: hidden;
+}
+
+.writing-flashcard-study .writing-flashcard-pad-revealed .writing-strips-scroll,
+.writing-flashcard-pad-revealed .writing-strips-scroll {
+    flex: 0 0 auto;
+    min-height: 0;
+    max-height: 7.5rem;
+    overflow-y: auto;
+}
+
+.writing-flashcard-study-family-revealed .writing-flashcard-pad-revealed {
+    max-height: 5rem;
+}
+
+.writing-flashcard-study-family-revealed .writing-flashcard-pad-revealed .writing-surface,
+.writing-flashcard-study-family-revealed .writing-flashcard-pad-revealed .writing-strips-scroll {
+    max-height: 5rem;
+}
+
+.writing-flashcard-study .writing-flashcard-answer-zone {
+    flex: 0 0 auto;
+    overflow: visible;
+}
+
+.writing-flashcard-study-actions {
+    flex-shrink: 0;
+    background: #07130f;
+    padding-bottom: env(safe-area-inset-bottom, 0);
+}
+
+.writing-flashcard-study {
+    display: flex;
+    min-height: 0;
+    flex-direction: column;
 }
 
 .writing-flashcard-pad {
@@ -63,15 +155,13 @@ button {
 
 .writing-flashcard-pad-revealed {
     flex: 0 0 auto;
-    max-height: 8.5rem;
 }
 
 .writing-flashcard-answer-zone {
     display: flex;
-    min-height: 0;
-    flex: 1;
+    flex: 0 0 auto;
     flex-direction: column;
-    justify-content: center;
+    justify-content: flex-start;
 }
 
 .writing-flashcard-reveal-zone {
@@ -202,6 +292,39 @@ button {
     color: #e8d7a1;
 }
 
+.setup-continue-dock {
+    position: fixed;
+    left: 50%;
+    bottom: 0;
+    z-index: 40;
+    width: 100%;
+    max-width: 28rem;
+    transform: translateX(-50%);
+    padding: 2rem 1.25rem calc(1rem + env(safe-area-inset-bottom));
+    background: linear-gradient(to top, #07130f 65%, rgba(7, 19, 15, 0.94) 82%, transparent);
+    pointer-events: none;
+}
+
+.setup-continue-btn {
+    pointer-events: auto;
+    display: block;
+    width: 100%;
+    border: 1px solid rgba(214, 181, 109, 0.34);
+    border-radius: 0.75rem;
+    background: rgba(214, 181, 109, 0.12);
+    padding: 0.95rem 1rem;
+    text-align: center;
+    font-size: 0.95rem;
+    font-weight: 700;
+    color: #e8d7a1;
+    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.35);
+}
+
+.setup-continue-btn:disabled {
+    cursor: not-allowed;
+    opacity: 0.4;
+}
+
 .minimal-secondary {
     border: 1px solid rgba(214, 181, 109, 0.12);
     border-radius: 0.55rem;
@@ -290,6 +413,85 @@ button {
     border-block: 1px solid rgba(214, 181, 109, 0.1);
 }
 
+.exposure-skip-bar {
+    display: flex;
+    flex-shrink: 0;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.75rem;
+    border-bottom: 1px solid rgba(214, 181, 109, 0.08);
+    padding: 0.15rem 0 0.65rem;
+}
+
+.exposure-review-sheet-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 60;
+    background: rgba(0, 0, 0, 0.62);
+}
+
+.exposure-review-sheet {
+    position: fixed;
+    inset-inline: 0;
+    bottom: 0;
+    z-index: 61;
+    margin-inline: auto;
+    max-width: 28rem;
+    max-height: min(72dvh, 34rem);
+    overflow: auto;
+    border-top: 1px solid rgba(214, 181, 109, 0.18);
+    border-radius: 1rem 1rem 0 0;
+    background: rgb(12 28 22);
+    padding: 1rem 1rem calc(1rem + env(safe-area-inset-bottom));
+}
+
+.exposure-review-sheet-list {
+    display: flex;
+    flex-direction: column;
+    gap: 0.45rem;
+}
+
+.exposure-review-sheet-item {
+    display: flex;
+    width: 100%;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.75rem;
+    border: 1px solid rgba(214, 181, 109, 0.12);
+    border-radius: 0.75rem;
+    background: rgba(214, 181, 109, 0.04);
+    padding: 0.75rem 0.85rem;
+    text-align: left;
+    transition:
+        border-color 150ms ease,
+        background-color 150ms ease;
+}
+
+.exposure-review-sheet-item:hover,
+.exposure-review-sheet-item:focus-visible {
+    border-color: rgba(214, 181, 109, 0.28);
+    background: rgba(214, 181, 109, 0.08);
+}
+
+.exposure-review-sheet-item.is-current {
+    border-color: rgba(214, 181, 109, 0.34);
+    background: rgba(214, 181, 109, 0.1);
+}
+
+.exposure-skip-bar-btn {
+    font-size: 0.68rem;
+    font-weight: 650;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: rgb(87 83 78);
+    transition: color 150ms ease;
+}
+
+.exposure-skip-bar-btn:hover,
+.exposure-skip-bar-btn:focus-visible {
+    color: rgb(168 162 158);
+}
+
 .verb-family-meaning {
     margin-bottom: 0.65rem;
     font-size: 0.95rem;
@@ -309,6 +511,18 @@ button {
     opacity: 0.34;
 }
 
+.verb-family-harf {
+    opacity: 0.72;
+}
+
+.verb-family-paradigm-cell.is-harf {
+    opacity: 0.55;
+}
+
+.verb-family-paradigm-cell.is-harf.is-complete {
+    opacity: 0.72;
+}
+
 .verb-family-paradigm-wrap {
     display: flex;
     min-height: 0;
@@ -322,6 +536,12 @@ button {
     width: 100%;
     grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 0.45rem;
+}
+
+.verb-family-paradigm[data-form-count="1"] {
+    grid-template-columns: minmax(0, 1fr);
+    max-width: 11rem;
+    margin-inline: auto;
 }
 
 .verb-family-paradigm.forms-5,
@@ -438,10 +658,12 @@ button {
 
 .writing-flashcard-answer-zone .verb-family-paradigm-wrap {
     align-items: stretch;
+    overflow: visible;
 }
 
 .writing-flashcard-answer-zone .verb-family-paradigm {
     text-align: center;
+    width: 100%;
 }
 
 .verb-family-write-header {
@@ -492,6 +714,83 @@ button {
     -webkit-user-select: none;
     user-select: none;
     -webkit-touch-callout: none;
+}
+
+.english-cue {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0.45rem;
+}
+
+.english-cue-stem {
+    display: inline-flex;
+    align-items: flex-start;
+    justify-content: center;
+    gap: 0.2rem;
+}
+
+.english-cue-variant {
+    flex: none;
+    font-size: 0.72em;
+    line-height: 1;
+    font-weight: 700;
+    letter-spacing: 0.02em;
+    color: rgba(232, 215, 161, 0.92);
+    transform: translateY(0.08em);
+}
+
+.english-cue-lg .english-cue-stem {
+    font-size: 1.5rem;
+    line-height: 1.35;
+    font-weight: 600;
+    color: rgb(245 245 244);
+}
+
+.english-cue-sm .english-cue-stem {
+    font-size: 1rem;
+    line-height: 1.4;
+    font-weight: 500;
+    color: rgb(214 211 209);
+}
+
+.exposure-say-face.is-active .english-cue-sm .english-cue-stem {
+    color: rgb(245 245 244);
+}
+
+.exposure-say-face.is-dimmed .english-cue-sm .english-cue-stem,
+.exposure-say-face.is-dimmed .english-cue-sm .english-cue-variant,
+.exposure-say-face.is-dimmed .english-cue-tag {
+    opacity: 0.34;
+}
+
+.english-cue-tags {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 0.35rem;
+}
+
+.english-cue-tag {
+    border: 1px solid rgba(214, 181, 109, 0.22);
+    border-radius: 999px;
+    background: rgba(214, 181, 109, 0.08);
+    padding: 0.15rem 0.55rem;
+    font-size: 0.62rem;
+    font-weight: 650;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: rgba(232, 215, 161, 0.88);
+}
+
+.english-cue-image-hint {
+    display: block;
+    max-height: 2.75rem;
+    width: auto;
+    max-width: 100%;
+    margin-inline: auto;
+    object-fit: contain;
+    opacity: 0.92;
 }
 
 .writing-surface-action {
@@ -552,10 +851,15 @@ button {
     overflow-anchor: none;
     -webkit-overflow-scrolling: touch;
     overscroll-behavior: contain;
-    touch-action: none;
+    touch-action: pan-y;
     -webkit-user-select: none;
     user-select: none;
     -webkit-touch-callout: none;
+}
+
+.writing-surface.is-drawing .writing-strips-scroll,
+.writing-surface-host.is-drawing .writing-strips-scroll {
+    touch-action: none;
 }
 
 .writing-strips-row {
@@ -566,7 +870,7 @@ button {
 .writing-strips-gutter {
     flex-shrink: 0;
     width: 1.35rem;
-    touch-action: none;
+    touch-action: pan-y;
 }
 
 .writing-strips-main {
@@ -576,7 +880,7 @@ button {
     flex-direction: column;
     gap: 0.45rem;
     padding-block: 0.35rem 0.5rem;
-    touch-action: none;
+    touch-action: pan-y;
 }
 
 .writing-strip-canvas {
@@ -724,6 +1028,47 @@ button {
     width: 100%;
     max-height: 4.5rem;
     padding: 0.25rem;
+}
+
+.browse-text-slot {
+    position: relative;
+}
+
+.browse-text-placeholder {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    color: rgba(214, 181, 109, 0.28);
+    letter-spacing: 0.18em;
+    pointer-events: none;
+}
+
+.browse-english-meaning .browse-text-placeholder {
+    align-items: flex-start;
+    padding-top: 0.05rem;
+}
+
+.browse-arabic-slot {
+    min-height: 4.5rem;
+}
+
+.browse-arabic-slot .arabic-review-image {
+    min-height: 4.5rem;
+}
+
+.browse-arabic-placeholder {
+    display: flex;
+    min-height: 4.5rem;
+    width: 100%;
+    align-items: center;
+    justify-content: center;
+    border: 1px dashed rgba(214, 181, 109, 0.16);
+    border-radius: 0.35rem;
+    background: rgba(245, 245, 244, 0.03);
+    color: rgba(214, 181, 109, 0.28);
+    font-size: 1.25rem;
+    letter-spacing: 0.18em;
 }
 
 .match-grid {

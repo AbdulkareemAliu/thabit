@@ -1,12 +1,15 @@
 {
   "scripts": {
     "dev": "vite",
-    "dev:phone": "vite --host",
+    "free-preview-port": "lsof -t -iTCP:4173 -sTCP:LISTEN | xargs kill 2>/dev/null || true",
+    "dev:phone": "npm run build:preview && npm run free-preview-port && THABIT_PHONE=1 vite preview --host 0.0.0.0",
     "build": "tsc -b && vite build",
     "build:preview": "tsc -b && VITE_DISABLE_SW=1 vite build",
+    "deploy:netlify": "npm run build && npx --yes netlify-cli deploy --prod --dir=dist",
+    "dev:phone:tunnel": "node scripts/dev-phone-tunnel.mjs",
     "preview": "npm run build:preview && vite preview",
-    "preview:phone": "npm run build:preview && THABIT_HTTPS=1 vite preview --host 0.0.0.0",
-    "preview:phone:http": "npm run build:preview && vite preview --host 0.0.0.0"
+    "preview:phone": "npm run build:preview && npm run free-preview-port && THABIT_HTTPS=1 THABIT_PHONE=1 vite preview --host 0.0.0.0",
+    "preview:phone:http": "npm run dev:phone"
   },
   "dependencies": {
     "@vitejs/plugin-react": "latest",

@@ -2,7 +2,6 @@
 import "./styles.css";
 import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
-import { registerSW } from "virtual:pwa-register";
 import { CheckCircle2, ChevronLeft, ChevronRight, Circle, CircleDot, Lock } from "lucide-react";
 import {
   EXPOSURE_SAY_REPS_ARABIC,
@@ -18,28 +17,43 @@ import {
   MATCH_SECONDS_PER_PAIR,
   MC_SECONDS,
 } from "./config";
+import { countNounFamilyUnits } from "./batching";
 import { lessons } from "./data";
+import { EnglishCue } from "./EnglishCue";
+import { formatEnglishCueText, getEnglishAnswerInContext } from "./english-cue";
 import {
-  buildNounBrowseRows,
+  buildNounBrowseFamilies,
   buildPhraseBrowseRows,
   buildVerbBrowseBatches,
+  buildVerbParadigmCells,
+  getBatchFamilyId,
   getBatchExposureCards,
   getCachedLessonExposureCards,
+  getFamilyMeaningLabel,
+  getVerbFamilyEnglishStemLabel,
+  getVerbFamilyHarf,
   getVerbFamilyBrowseMeaning,
+  getVerbBrowseCells,
+  getNounFamilyFormsForCard,
   getVerbFamilyFormsForCard,
   getVerbFamilyIdFromCardId,
-  getVerbFamilyMeaningLabel,
+  NOUN_FORM_ARABIC_LABELS,
+  NOUN_FORM_ORDER,
   getVerbFormLabel,
-  groupExposureCardsIntoVerbFamilies,
+  getBatchStudyCardCount,
+  groupExposureCardsIntoExposureUnits,
+  prepareBatchStudyCards,
   prepareLessonTestWritingCards,
-  prepareVerbBatchRecognition,
   VERB_FORM_ORDER,
+  VERB_HARF_ARABIC_LABEL,
+  verbFormIndexToParadigmCellIndex,
   vocabularyImageUrl,
 } from "./exposure-cards";
-import { clearBatchSession, getBatchSession, getResumeBatchPhase, isBatchSessionValid, patchBatchSession, restoreStudyPrompts, saveBatchSessionPhase, serializeStudyPrompt } from "./batch-session";
-import { getReviewableCardsForLesson, getStepContinueLabel, getVocabularyTestSection, getWithinBatchWritingTestCards, getWritingConfigForStep, getWritingStudyCardsForStep, prepareWritingTestCardsForStep, resolveDailyReviewCards, toReviewableCard, usesVerbFamilyWritingTest } from "./lesson-study";
-import { clearLessonMisses, getLessonMissedFamilyCuePasses, recordLessonFamilyMiss } from "./lesson-misses";
+import { clearBatchSession, getBatchSession, getResumeBatchPhase, isBatchSessionValid, patchBatchSession, restoreStudyPrompts, restoreWritingStudyPrompts, saveBatchSessionPhase, serializeStudyPrompt } from "./batch-session";
+import { getReviewableCardsForLesson, getStepContinueLabel, getVocabularyTestSection, getWritingConfigForStep, getWritingStudyCardsForStep, gradeDailyReviewPrompt, prepareDailyReviewStudyCards, prepareWithinBatchWritingTestCards, prepareWritingTestCardsForStep, toReviewableCard, usesFamilyWritingTest, usesNounFamilyWritingTest, usesVerbFamilyWritingTest } from "./lesson-study";
+import { clearLessonMisses, recordLessonFamilyMiss } from "./lesson-misses";
 import { warmVocabularyCache, useOfflineWarmProgress } from "./offline-cache";
+import { bootstrapPwa } from "./pwa-bootstrap";
 import {
   COMPLETED_PHASES_STORAGE_KEY,
   COMPLETED_STEPS_STORAGE_KEY,
@@ -56,25 +70,36 @@ import {
   LESSON_SECTION_ORDER,
   needsInitialSetup,
 } from "./progress";
-import { applyShorterNewCardStaggerMigration, applyStaggeredReviewScheduleMigration, buildDailyReviewQueue, getDailyReviewStats, gradeReviewCard, recordMemorizationMiss, syncReviewPool } from "./review";
+import { applyGlobalNewCardStaggerMigration, applyNounFamilyReviewMigration, applyShorterNewCardStaggerMigration, applyStaggeredReviewScheduleMigration, applyVerbFamilyReviewMigration, buildDailyReviewQueue, getDailyReviewStats, recordMemorizationMiss, syncReviewPool } from "./review";
 import { resetStreak, recordStudyActivity, readStreak } from "./streak";
 import {
   BATCH_TEST_MC_CUE_SIDES,
-  DAILY_REVIEW_WRITING_CONFIG,
+  BATCH_TEST_WRITING_CONFIG,
   advanceStudyPromptQueue,
+  buildDailyReviewFlashcardQueue,
+  advanceWritingStudyQueue,
+  advanceWritingStudyQueueAfterFamilyMiss,
   batchMultipleChoicePromptTotal,
-  batchWritingTestPromptTotal,
   buildBatchMultipleChoiceStudyQueue,
-  buildBatchWritingStudyQueue,
   buildLessonTestWritingConfig,
+  buildWithinBatchWritingStudyQueue,
   buildWritingStudyQueue,
   getBatchArabicMultipleChoiceOptions,
   getBatchEnglishMultipleChoiceOptions,
   getBatchMultipleChoiceCards,
   getEnglishAnswer,
   getArabicAnswer,
+  getMultipleChoiceAnswerKey,
+  getMultipleChoiceArabicOptionKey,
+  getVerbFamilyWritingReviewCardId,
+  isFirstVerbFamilyFormPart,
+  isLastVerbFamilyFormPart,
+  getVerbFamilyFormPartIndex,
+  getVerbFamilyFormPartCount,
+  isValidFamilyWritingQueue,
   shouldIncrementWritingProgress,
-  writingTestPromptTotal,
+  writingTestFamilyTotal,
+  WRITING_QUEUE_LOGIC_VERSION,
   type StudyPrompt,
 } from "./study-queue";
 import { shuffle } from "./shuffle";
@@ -208,7 +233,10 @@ function App() {
     }, [o]),
     useEffect(() => {
       (applyStaggeredReviewScheduleMigration(),
+        applyVerbFamilyReviewMigration(lessons),
+        applyNounFamilyReviewMigration(lessons),
         syncReviewPool(lessons, o, getReviewableCardsForLesson),
+        applyGlobalNewCardStaggerMigration(lessons, o, getReviewableCardsForLesson),
         applyShorterNewCardStaggerMigration(lessons, o, getReviewableCardsForLesson));
     }, [o]),
     useEffect(() => {
@@ -298,7 +326,10 @@ function App() {
         >
           {<AppHeader screen={screen} lesson={c} onBack={d} />}
           {
-            <div ref={scrollContainerRef} className={`no-scrollbar min-h-0 flex-1 overflow-auto`}>
+            <div
+              ref={scrollContainerRef}
+              className={`no-scrollbar min-h-0 flex-1 ${(screen.name === `batch` && screen.phase === `writing-test`) || screen.name === `vocabulary-test` || screen.name === `final-test` || screen.name === `daily-review` ? `flex flex-col overflow-hidden` : `overflow-auto`}`}
+            >
               {screen.name === `initial-setup` && <InitialSetupScreen onComplete={h} />}
               {screen.name === `home` && <HomeScreen streak={n} completedStepIds={o} onNavigate={setScreen} />}
               {screen.name === `daily-review` && <DailyReviewScreen completedStepIds={o} onRecordStudyDay={() => r(recordStudyActivity())} onNavigate={setScreen} />}
@@ -399,8 +430,20 @@ const INITIAL_SETUP_SECTION_LABELS: Record<SectionKind, string> = {
   phrases: `Phrases`,
   verbs: `Verbs`,
 };
+function InitialSetupContinueDock({ disabled: e, onClick: t }) {
+  return (
+    <div className={`setup-continue-dock`}>
+      {
+        <button type={`button`} disabled={e} onClick={t} className={`setup-continue-btn`}>
+          {`Continue`}
+        </button>
+      }
+    </div>
+  );
+}
 function InitialSetupScreen({ onComplete: e }) {
   let t = useMemo(() => getCurrentLesson(lessons, []) ?? lessons[0]!, []),
+    [step, setStep] = useState(`lesson`),
     [n, r] = useState(() => t.id),
     i = useMemo(() => lessons.find((e) => e.id === n) ?? t, [n, t]),
     a = useMemo(() => getInitialSetupSectionOptions(i), [i]),
@@ -421,15 +464,14 @@ function InitialSetupScreen({ onComplete: e }) {
     }, [i, o]),
     l = a.length > 0;
   return (
-    <div className={`flex min-h-full flex-col px-5 py-8`}>
-      {<p className={`section-label`}>{`Welcome`}</p>}
-      {<h1 className={`mt-3 text-3xl font-semibold text-[#e8d7a1]`}>{`Where are you in the course?`}</h1>}
-      {<p className={`mt-3 text-sm leading-6 text-stone-500`}>{`Choose your current lesson and section. Earlier lessons, earlier sections in that lesson, and their section tests will be marked complete.`}</p>}
-      {
-        <section className={`mt-8`}>
-          {<h2 className={`section-label mb-3`}>{`Lesson`}</h2>}
+    <div className={`px-5 py-8 pb-28`}>
+      {step === `lesson` ? (
+        <Fragment>
+          {<p className={`section-label`}>{`Welcome`}</p>}
+          {<h1 className={`mt-3 text-3xl font-semibold text-[#e8d7a1]`}>{`Where are you in the course?`}</h1>}
+          {<p className={`mt-3 text-sm leading-6 text-stone-500`}>{`Choose the lesson you are working on now.`}</p>}
           {
-            <div className={`divide-y divide-[#d6b56d]/10 rounded-xl border border-[#d6b56d]/10`}>
+            <div className={`mt-8 divide-y divide-[#d6b56d]/10 rounded-xl border border-[#d6b56d]/10`}>
               {lessons.map((e) => {
                 let t = n === e.id;
                 return (
@@ -450,13 +492,22 @@ function InitialSetupScreen({ onComplete: e }) {
               })}
             </div>
           }
-        </section>
-      }
-      {
-        <section className={`mt-8`}>
-          {<h2 className={`section-label mb-3`}>{`Start in section`}</h2>}
+          {<InitialSetupContinueDock disabled={!1} onClick={() => setStep(`section`)} />}
+        </Fragment>
+      ) : (
+        <Fragment>
           {
-            <div className={`grid grid-cols-1 gap-2`}>
+            <button type={`button`} onClick={() => setStep(`lesson`)} className={`header-back-btn mb-4 flex min-h-11 w-fit items-center gap-1 border border-[#d6b56d]/15 px-3 text-sm text-[#d6b56d]`}>
+              {<ChevronLeft size={18} />}
+              {`Lessons`}
+            </button>
+          }
+          {<p className={`section-label`}>{`Lesson ${i.number}`}</p>}
+          {<h1 className={`mt-3 text-3xl font-semibold text-[#e8d7a1]`}>{`Where in this lesson?`}</h1>}
+          {<p className={`mt-3 text-sm leading-6 text-stone-500`}>{i.title}</p>}
+          {<p className={`mt-2 text-sm leading-6 text-stone-500`}>{`Pick the section you are starting from. Earlier sections and prior lessons will be marked complete.`}</p>}
+          {
+            <div className={`mt-8 grid grid-cols-1 gap-2`}>
               {a.map((t) => {
                 let n = o === t;
                 return (
@@ -473,25 +524,21 @@ function InitialSetupScreen({ onComplete: e }) {
               })}
             </div>
           }
-        </section>
-      }
-      {c.length > 0 && (
-        <section className={`mt-8 rounded-xl border border-[#d6b56d]/10 px-4 py-4`}>
-          {<p className={`section-label`}>{`Will be marked complete`}</p>}
-          {
-            <ul className={`mt-3 space-y-1 text-sm text-stone-500`}>
-              {c.map((e) => (
-                <li key={e}>{e}</li>
-              ))}
-            </ul>
-          }
-        </section>
+          {c.length > 0 && (
+            <section className={`mt-6 rounded-xl border border-[#d6b56d]/10 px-4 py-4`}>
+              {<p className={`section-label`}>{`Will be marked complete`}</p>}
+              {
+                <ul className={`mt-3 space-y-1 text-sm text-stone-500`}>
+                  {c.map((e) => (
+                    <li key={e}>{e}</li>
+                  ))}
+                </ul>
+              }
+            </section>
+          )}
+          {<InitialSetupContinueDock disabled={!l} onClick={() => e(n, o)} />}
+        </Fragment>
       )}
-      {
-        <button type={`button`} disabled={!l} onClick={() => e(n, o)} className={`final-test-link mx-auto mt-auto pt-10 disabled:cursor-not-allowed disabled:opacity-40`}>
-          {`Continue`}
-        </button>
-      }
     </div>
   );
 }
@@ -764,7 +811,7 @@ function BatchScreen({ lesson: e, stepId: t, phase: n, completedPhases: r, compl
   let c = e.steps.find((e) => e.id === t),
     u = getLearnUnitLabel(e, t),
     d = i.includes(t) || isLessonComplete(e, i) ? BATCH_PHASES.map((e) => e.id) : r,
-    f = getBatchExposureCards(e, t).length,
+    f = getBatchStudyCardCount(getBatchExposureCards(e, t)),
     m = useCallback(
       (n) => {
         n.name === `batch` && n.stepId === t && saveBatchSessionPhase(t, n.phase, f);
@@ -785,7 +832,7 @@ function BatchScreen({ lesson: e, stepId: t, phase: n, completedPhases: r, compl
     <WritingTestPhase lesson={e} stepId={t} stepTitle={c?.title ?? u} completedPhases={d} completedStepIds={i} completedBatchPhases={l} onPhaseComplete={a} onStepComplete={o} onNavigate={m} />
   ) : null;
 }
-function ExposureSayLoopPanel({ card: e, heading: t, onComplete: n, arabicReps: r = TEST_MISS_SAY_REPS_ARABIC, englishReps: i = TEST_MISS_SAY_REPS_ENGLISH }) {
+function ExposureSayLoopPanel({ card: e, heading: t, onComplete: n, arabicReps: r = TEST_MISS_SAY_REPS_ARABIC, englishReps: i = TEST_MISS_SAY_REPS_ENGLISH, cueContextCards: cueContext }) {
   let [a, o] = useState(`arabic`),
     [s, c] = useState(r),
     [u, d] = useState(i),
@@ -803,9 +850,9 @@ function ExposureSayLoopPanel({ card: e, heading: t, onComplete: n, arabicReps: 
         <div className={`min-h-0 flex-1 overflow-auto border-y border-[#d6b56d]/10 py-5 text-center`}>
           {<div className={a === `arabic` ? `exposure-say-face is-active` : `exposure-say-face is-dimmed`}>{<ArabicCardFace card={e} />}</div>}
           {
-            <p lang={`en`} dir={`ltr`} className={`mt-3 text-lg ${a === `english` ? `exposure-say-face is-active text-stone-100` : `exposure-say-face is-dimmed text-stone-300`}`}>
-              {e.english}
-            </p>
+            <div className={`mt-3 ${a === `english` ? `exposure-say-face is-active` : `exposure-say-face is-dimmed`}`}>
+              <EnglishCue card={e} contextCards={cueContext} size={`sm`} showImageHint={!1} />
+            </div>
           }
         </div>
       }
@@ -841,7 +888,8 @@ function ExposureSayLoopPanel({ card: e, heading: t, onComplete: n, arabicReps: 
   );
 }
 function VerbFamilySayLoopPanel({ forms: e, heading: t, onComplete: n, rounds: r = TEST_MISS_VERB_FAMILY_SAY_ROUNDS, sayRound: i, sayStep: a, onAdvance: o }) {
-  let s = getVerbFamilyMeaningLabel(e),
+  let s = getVerbFamilyEnglishStemLabel(e),
+    harf = getVerbFamilyHarf(e),
     c = i !== void 0 && a !== void 0 && o,
     [u, d] = useState(0),
     [f, p] = useState(0),
@@ -879,6 +927,11 @@ function VerbFamilySayLoopPanel({ forms: e, heading: t, onComplete: n, rounds: r
                 {s}
               </p>
             )}
+            {harf && (
+              <p lang={`ar`} dir={`rtl`} className={`verb-family-harf mt-1 text-sm text-[#d6b56d]/70`}>
+                {`${VERB_HARF_ARABIC_LABEL}: ${harf}`}
+              </p>
+            )}
             {
               <p className={`mt-1 text-xs text-stone-500`}>
                 {`Round `}
@@ -904,7 +957,7 @@ function VerbFamilySayLoopPanel({ forms: e, heading: t, onComplete: n, rounds: r
             {g && <p className={`mt-2 text-xs text-stone-500`}>{`Say the English meaning, then each Arabic form.`}</p>}
           </div>
         }
-        {<div className={`verb-family-paradigm-wrap min-h-0 flex-1 py-3`}>{<VerbFamilyParadigmGrid forms={e} activeFormIndex={_} />}</div>}
+        {<div className={`verb-family-paradigm-wrap min-h-0 flex-1 overflow-y-auto py-3`}>{<VerbFamilyParadigmGrid forms={e} activeFormIndex={_} />}</div>}
         {
           <div className={`exposure-say-action-zone shrink-0`} aria-label={`Say button area`}>
             {
@@ -921,30 +974,29 @@ function VerbFamilySayLoopPanel({ forms: e, heading: t, onComplete: n, rounds: r
       </section>
   );
 }
-function TestMissSayRemediation({ card: e, lessonCards: t, onComplete: n }) {
-  let r = useMemo(() => getVerbFamilyFormsForCard(t, e), [t, e]);
-  return r ? <VerbFamilySayLoopPanel key={r[0]?.id ?? e.id} forms={r} heading={`Say the family again`} onComplete={n} /> : <ExposureSayLoopPanel key={e.id} card={e} heading={`Say it again`} onComplete={n} />;
-}
 function VerbFamilyParadigmGrid({ forms: e, activeFormIndex: t, compact: n = !1 }) {
-  let r = e.length >= 5 ? `forms-${e.length}` : ``,
+  let cells = buildVerbParadigmCells(e),
+    highlightIndex = verbFormIndexToParadigmCellIndex(e, t),
+    r = cells.length >= 5 ? `forms-${cells.length}` : ``,
     i = t === -1,
     a = typeof t === `number` && t >= 0;
   return (
-    <div className={`verb-family-paradigm min-h-0 shrink ${n ? `verb-family-paradigm-test` : ``} ${r}`} data-form-count={e.length}>
-      {e.map((e, n) => {
-        let o = i || (a && n === t);
+    <div className={`verb-family-paradigm min-h-0 shrink ${n ? `verb-family-paradigm-test` : ``} ${r}`} data-form-count={cells.length}>
+      {cells.map((cell, cellIndex) => {
+        let isHarf = cell.id.endsWith(`-harf`),
+          o = i || (a && cellIndex === highlightIndex);
         return (
-          <div key={e.id} className={`verb-family-paradigm-cell${o ? (i ? ` is-complete` : ` is-active`) : ``}`}>
+          <div key={cell.id} className={`verb-family-paradigm-cell${isHarf ? ` is-harf` : ``}${o ? (i ? ` is-complete` : ` is-active`) : ``}`}>
             {
               <p className={`verb-family-paradigm-label`} lang={`ar`} dir={`rtl`}>
-                {e.label}
+                {cell.label}
               </p>
             }
-            {e.imageUrl ? (
-              <VocabularyImage src={e.imageUrl} alt={e.label ?? e.arabic} className={`verb-family-paradigm-image`} />
+            {cell.imageUrl ? (
+              <VocabularyImage src={cell.imageUrl} alt={cell.label ?? cell.arabic} className={`verb-family-paradigm-image`} />
             ) : (
               <p lang={`ar`} dir={`rtl`} className={`verb-family-paradigm-arabic arabic`}>
-                {e.arabic}
+                {cell.arabic}
               </p>
             )}
           </div>
@@ -1000,6 +1052,79 @@ function VerbFormWriteCue({ card: e, onClearPad: t }) {
     </div>
   );
 }
+function getExposureUnitLabel(e, t) {
+  return Array.isArray(e) ? getFamilyMeaningLabel(e) || `Family ${t + 1}` : formatEnglishCueText(e.english) || e.label || `Word ${t + 1}`;
+}
+function getExposureUnitArabic(e) {
+  return (Array.isArray(e) ? e[0]?.arabic : e.arabic) ?? ``;
+}
+function ExposureActionBar({ onSkip: e, skipLabel: t = `Already know this`, onReviewEarlier: n, showReviewEarlier: r }) {
+  return (
+    <div className={`exposure-skip-bar`}>
+      {
+        r ? (
+          <button type={`button`} onClick={n} className={`exposure-skip-bar-btn`}>{`Earlier in batch`}</button>
+        ) : (
+          <span aria-hidden={`true`} />
+        )
+      }
+      {
+        <button type={`button`} onClick={e} className={`exposure-skip-bar-btn`}>
+          {t}
+        </button>
+      }
+    </div>
+  );
+}
+function ExposureUnitReviewSheet({ units: e, maxIndex: t, currentIndex: n, open: r, onClose: i, onSelect: a }) {
+  if (!r || t < 0) return null;
+  let o = e.slice(0, t + 1);
+  return (
+    <Fragment>
+      {<button type={`button`} className={`exposure-review-sheet-backdrop`} aria-label={`Close review list`} onClick={i} />}
+      {
+        <div className={`exposure-review-sheet`} role={`dialog`} aria-modal={`true`} aria-label={`Review earlier words`}>
+          {<p className={`section-label`}>{`Review earlier words in this batch`}</p>}
+          {<p className={`mt-1 text-sm text-stone-500`}>{`Pick a word from this batch to run exposure again.`}</p>}
+          {
+            <div className={`exposure-review-sheet-list mt-4`}>
+              {o.map((e, t) => (
+                <button
+                  key={t}
+                  type={`button`}
+                  className={`exposure-review-sheet-item${t === n ? ` is-current` : ``}`}
+                  onClick={() => {
+                    (a(t), i());
+                  }}
+                >
+                  {
+                    <div className={`min-w-0`}>
+                      {<p className={`truncate text-sm font-medium text-stone-100`}>{getExposureUnitLabel(e, t)}</p>}
+                      {
+                        getExposureUnitArabic(e) && (
+                          <p lang={`ar`} dir={`rtl`} className={`arabic mt-0.5 truncate text-base text-[#e8d7a1]/85`}>
+                            {getExposureUnitArabic(e)}
+                          </p>
+                        )
+                      }
+                    </div>
+                  }
+                  {t === n && <span className={`shrink-0 text-[0.62rem] font-semibold uppercase tracking-[0.14em] text-[#d6b56d]`}>{`Current`}</span>}
+                </button>
+              ))}
+            </div>
+          }
+          {
+            <button type={`button`} onClick={i} className={`nav-text-action mt-4 w-full text-stone-500`}>
+              {`Close`}
+            </button>
+          }
+        </div>
+      }
+    </Fragment>
+  );
+}
+
 function VerbFamilyExposurePhase({ lesson: e, stepId: t, stepTitle: n, families: r, cardCount: i, completedPhases: a, onPhaseComplete: o, onNavigate: s }) {
   let c = getBatchSession(t),
     u = isBatchSessionValid(c, i) && c?.exposure?.verbFamilyMode ? c.exposure : void 0,
@@ -1012,14 +1137,15 @@ function VerbFamilyExposurePhase({ lesson: e, stepId: t, stepTitle: n, families:
     [le, M] = useState(!1),
     [N, re] = useState(0),
     [ie, ae] = useState(!1),
+    [reviewPickerOpen, setReviewPickerOpen] = useState(!1),
     oe = r[d] ?? [],
-    se = getVerbFamilyMeaningLabel(oe),
+    se = getFamilyMeaningLabel(oe),
     ue = p >= VERB_EXPOSURE_SAY_ROUNDS,
     de = x >= VERB_EXPOSURE_WRITES,
     fe = ue && de && !D,
     pe = ue && (!de || D),
     me = D ? x + 1 : Math.min(x + 1, VERB_EXPOSURE_WRITES),
-    ge = () => {
+    advanceToNextFamily = useCallback(() => {
       let n = d + 1;
       if (n < r.length) {
         (f(n), m(0), g(0), S(0), w(0), k(!1), M(!1), ae(!1), re((e) => e + 1));
@@ -1032,11 +1158,16 @@ function VerbFamilyExposurePhase({ lesson: e, stepId: t, stepTitle: n, families:
           stepId: t,
           phase: `memory-match`,
         }));
-    },
+    }, [d, r.length, t, e.id, o, s]),
     _e = () => {
       (k(!0), S(0), w(0), M(!1), ae(!1), re((e) => e + 1));
     },
-    ve = () => re((e) => e + 1);
+    ve = () => re((e) => e + 1),
+    restartFamilyAt = useCallback((e) => {
+      (f(e), m(0), g(0), S(0), w(0), k(!1), M(!1), ae(!1), re((t) => t + 1));
+    }, []),
+    showReviewEarlier = r.length > 1 && (d > 0 || fe),
+    reviewMaxIndex = fe ? d : d - 1;
   useEffect(() => {
     i > 0 &&
       patchBatchSession(t, {
@@ -1060,7 +1191,7 @@ function VerbFamilyExposurePhase({ lesson: e, stepId: t, stepTitle: n, families:
   }, [t, i, d, p, h, x, D, C]);
   if (!oe.length)
     return (
-      <div className={`flex h-full min-h-0 flex-col px-5 py-6`}>
+      <div className={`flex min-h-0 flex-1 flex-col overflow-hidden px-5 py-6`}>
         {<p className={`section-label`}>{n}</p>}
         {<p className={`mt-4 text-stone-400`}>{`No verb forms found for this family.`}</p>}
       </div>
@@ -1069,6 +1200,24 @@ function VerbFamilyExposurePhase({ lesson: e, stepId: t, stepTitle: n, families:
     <div className={`flex h-full min-h-0 flex-col px-5 ${pe ? `overflow-hidden py-4` : `py-5`}`}>
       {<BatchStepMeta stepTitle={n} progress={`${d + 1}/${r.length}`} />}
       {<PhaseRail active={`exposure`} completedPhases={a} lessonId={e.id} stepId={t} onNavigate={s} />}
+      {
+        <ExposureActionBar
+          onSkip={advanceToNextFamily}
+          skipLabel={`Already know this family`}
+          showReviewEarlier={showReviewEarlier}
+          onReviewEarlier={() => setReviewPickerOpen(!0)}
+        />
+      }
+      {
+        <ExposureUnitReviewSheet
+          units={r}
+          maxIndex={reviewMaxIndex}
+          currentIndex={d}
+          open={reviewPickerOpen}
+          onClose={() => setReviewPickerOpen(!1)}
+          onSelect={restartFamilyAt}
+        />
+      }
       {fe ? (
         <section className={`exposure-word-choice min-h-0 flex-1 flex flex-col justify-center py-6 text-center`}>
           {se && (
@@ -1080,7 +1229,7 @@ function VerbFamilyExposurePhase({ lesson: e, stepId: t, stepTitle: n, families:
           {
             <div className={`mt-8 flex flex-col items-center gap-2`}>
               {
-                <button type={`button`} onClick={ge} className={`nav-text-action text-[#e8d7a1]`}>
+                <button type={`button`} onClick={advanceToNextFamily} className={`nav-text-action text-[#e8d7a1]`}>
                   {d === r.length - 1 ? `Continue to Match` : `Next family`}
                 </button>
               }
@@ -1156,7 +1305,7 @@ function VerbFamilyExposurePhase({ lesson: e, stepId: t, stepTitle: n, families:
                     >{`Done`}</button>
                   }
                   {D && (
-                    <button type={`button`} onClick={ge} className={`text-xs font-semibold text-stone-600`}>
+                    <button type={`button`} onClick={advanceToNextFamily} className={`text-xs font-semibold text-stone-600`}>
                       {d === r.length - 1 ? `Continue to Match` : `Next family`}
                     </button>
                   )}
@@ -1173,8 +1322,10 @@ function VerbFamilyExposurePhase({ lesson: e, stepId: t, stepTitle: n, families:
 }
 function ExposurePhase({ lesson: e, stepId: t, stepTitle: n, completedPhases: r, onPhaseComplete: i, onNavigate: a }) {
   let o = useMemo(() => getBatchExposureCards(e, t), [e, t]),
-    l = useMemo(() => groupExposureCardsIntoVerbFamilies(o), [o]);
-  if (o[0]?.section === `verbs`) return <VerbFamilyExposurePhase lesson={e} stepId={t} stepTitle={n} families={l} cardCount={o.length} completedPhases={r} onPhaseComplete={i} onNavigate={a} />;
+    l = useMemo(() => groupExposureCardsIntoExposureUnits(o), [o]);
+  if (o[0]?.section === `verbs` || o[0]?.section === `nouns`) {
+    return <VerbFamilyExposurePhase lesson={e} stepId={t} stepTitle={n} families={l} cardCount={l.length} completedPhases={r} onPhaseComplete={i} onNavigate={a} />;
+  }
   let P = getBatchSession(t),
     L = isBatchSessionValid(P, o.length) ? P?.exposure : undefined,
     [s, c] = useState(() => Math.min(L?.cardIndex ?? 0, Math.max(0, o.length - 1))),
@@ -1187,6 +1338,7 @@ function ExposurePhase({ lesson: e, stepId: t, stepTitle: n, completedPhases: r,
     [w, T] = useState(!1),
     [isExtraPractice, setIsExtraPractice] = useState(L?.isExtraPractice ?? !1),
     [isPadDrawing, setIsPadDrawing] = useState(!1),
+    [reviewPickerOpen, setReviewPickerOpen] = useState(!1),
     E = o[s],
     D = u === 0 && f === 0,
     k = D,
@@ -1198,7 +1350,7 @@ function ExposurePhase({ lesson: e, stepId: t, stepTitle: n, completedPhases: r,
       (c(e), d(EXPOSURE_SAY_REPS_ARABIC), p(EXPOSURE_SAY_REPS_ENGLISH), h(`arabic`), y(0), C(`arabic`), setIsExtraPractice(!1), setIsPadDrawing(!1), T(!1), x((n) => n + 1));
     },
     ae = () => x((e) => e + 1),
-    oe = () => {
+    advanceToNextWord = useCallback(() => {
       let n = s + 1;
       if (n < o.length) {
         ie(n);
@@ -1211,11 +1363,13 @@ function ExposurePhase({ lesson: e, stepId: t, stepTitle: n, completedPhases: r,
           stepId: t,
           phase: `memory-match`,
         }));
-    },
+    }, [s, o.length, t, e.id, i, a]),
     se = () => {
       (setIsExtraPractice(!0), C(`arabic`), T(!1), ae());
     },
-    ce = isExtraPractice ? v + 1 : Math.min(v + 1, EXPOSURE_WRITES);
+    ce = isExtraPractice ? v + 1 : Math.min(v + 1, EXPOSURE_WRITES),
+    showReviewEarlier = o.length > 1 && (s > 0 || M),
+    reviewMaxIndex = M ? s : s - 1;
   useEffect(() => {
     o.length > 0 &&
       patchBatchSession(t, {
@@ -1236,18 +1390,35 @@ function ExposurePhase({ lesson: e, stepId: t, stepTitle: n, completedPhases: r,
     <div className={`flex h-full min-h-0 flex-col px-5 ${k ? `overflow-hidden py-4` : `py-5`}`}>
       {<BatchStepMeta stepTitle={n} progress={`${s + 1}/${o.length}`} />}
       {<PhaseRail active={`exposure`} completedPhases={r} lessonId={e.id} stepId={t} onNavigate={a} />}
+      {
+        <ExposureActionBar
+          onSkip={advanceToNextWord}
+          showReviewEarlier={showReviewEarlier}
+          onReviewEarlier={() => setReviewPickerOpen(!0)}
+        />
+      }
+      {
+        <ExposureUnitReviewSheet
+          units={o}
+          maxIndex={reviewMaxIndex}
+          currentIndex={s}
+          open={reviewPickerOpen}
+          onClose={() => setReviewPickerOpen(!1)}
+          onSelect={ie}
+        />
+      }
       {M ? (
         <section className={`exposure-word-choice min-h-0 flex-1 flex flex-col justify-center py-6 text-center`}>
           {<ArabicCardFace card={E} />}
           {
-            <p lang={`en`} dir={`ltr`} className={`mt-3 text-base text-stone-300`}>
-              {E.english}
-            </p>
+            <div className={`mt-3`}>
+              <EnglishCue card={E} contextCards={o} size={`sm`} showImageHint={!0} />
+            </div>
           }
           {
             <div className={`mt-8 flex flex-col items-center gap-2`}>
               {
-                <button type={`button`} onClick={oe} className={`nav-text-action text-[#e8d7a1]`}>
+                <button type={`button`} onClick={advanceToNextWord} className={`nav-text-action text-[#e8d7a1]`}>
                   {s === o.length - 1 ? `Continue to Match` : `Next Word`}
                 </button>
               }
@@ -1259,7 +1430,7 @@ function ExposurePhase({ lesson: e, stepId: t, stepTitle: n, completedPhases: r,
         <div className={`exposure-write-shell min-h-0 flex-1 overflow-hidden py-1`}>
           {
             <WritingSurfaceHost isDrawing={isPadDrawing}>
-              {<ExposureWriteCue card={E} writingLanguage={S} onClearPad={ae} />}
+              {<ExposureWriteCue card={E} writingLanguage={S} onClearPad={ae} cueContextCards={o} />}
               {<MultiStripWritingPad clearToken={b} onHasInkChange={T} onDrawingChange={setIsPadDrawing} />}
             </WritingSurfaceHost>
           }
@@ -1311,7 +1482,7 @@ function ExposurePhase({ lesson: e, stepId: t, stepTitle: n, completedPhases: r,
                     >{`Done`}</button>
                   }
                   {isExtraPractice && (
-                    <button type={`button`} onClick={oe} className={`text-xs font-semibold text-stone-600`}>
+                    <button type={`button`} onClick={advanceToNextWord} className={`text-xs font-semibold text-stone-600`}>
                       {s === o.length - 1 ? `Continue to Match` : `Next word`}
                     </button>
                   )}
@@ -1328,9 +1499,9 @@ function ExposurePhase({ lesson: e, stepId: t, stepTitle: n, completedPhases: r,
             <div className={`min-h-0 flex-1 overflow-auto border-y border-[#d6b56d]/10 py-5 text-center`}>
               {<div className={m === `arabic` ? `exposure-say-face is-active` : `exposure-say-face is-dimmed`}>{<ArabicCardFace card={E} />}</div>}
               {
-                <p lang={`en`} dir={`ltr`} className={`mt-3 text-lg ${m === `english` ? `exposure-say-face is-active text-stone-100` : `exposure-say-face is-dimmed text-stone-300`}`}>
-                  {E.english}
-                </p>
+                <div className={`mt-3 ${m === `english` ? `exposure-say-face is-active` : `exposure-say-face is-dimmed`}`}>
+                  <EnglishCue card={E} contextCards={o} size={`sm`} showImageHint={!1} />
+                </div>
               }
             </div>
           }
@@ -1366,13 +1537,13 @@ function ExposurePhase({ lesson: e, stepId: t, stepTitle: n, completedPhases: r,
       )}
     </div>
   ) : (
-    <div className={`flex h-full min-h-0 flex-col px-5 py-6`}>
+    <div className={`flex min-h-0 flex-1 flex-col overflow-hidden px-5 py-6`}>
       {<p className={`section-label`}>{n}</p>}
       {<p className={`mt-4 text-stone-400`}>{`No exposure cards found for this ${getLearnUnitLabel(e, t).toLowerCase()}.`}</p>}
     </div>
   );
 }
-function ExposureWriteCue({ card: e, writingLanguage: t, onClearPad: n }) {
+function ExposureWriteCue({ card: e, writingLanguage: t, onClearPad: n, cueContextCards: cueContext }) {
   let [r, i] = useState(!1),
     a = t === `arabic` ? `english` : `arabic`,
     o = t === `english` ? `Optional: memory notes or other meanings you want to remember.` : `In a sentence if you can — no need to be perfect.`,
@@ -1404,9 +1575,7 @@ function ExposureWriteCue({ card: e, writingLanguage: t, onClearPad: n }) {
       {
         <div className={`space-y-2 text-center`}>
           {a === `english` ? (
-            <div lang={`en`} dir={`ltr`} className={`writing-cue-copy exposure-write-cue-text text-base text-stone-300`}>
-              {e.english}
-            </div>
+            <EnglishCue card={e} contextCards={cueContext} className={`writing-cue-copy exposure-write-cue-text`} size={`sm`} showImageHint={!1} />
           ) : e.imageUrl ? (
             <VocabularyImage src={e.imageUrl} alt={e.english} className={`writing-cue-copy exposure-write-cue-image`} />
           ) : (
@@ -1424,9 +1593,7 @@ function ExposureWriteCue({ card: e, writingLanguage: t, onClearPad: n }) {
                 </div>
               )
             ) : (
-              <div lang={`en`} dir={`ltr`} className={`writing-cue-copy exposure-write-cue-text text-base text-stone-400`}>
-                {e.english}
-              </div>
+              <EnglishCue card={e} contextCards={cueContext} className={`writing-cue-copy exposure-write-cue-text opacity-90`} size={`sm`} showImageHint={!1} />
             ))}
         </div>
       }
@@ -1482,8 +1649,8 @@ function WritingSurfaceHost({ isDrawing: e, className: t = ``, children: n }) {
     )
   );
 }
-function MultiStripWritingPad({ clearToken: e, onHasInkChange: t, onDrawingChange: n, className: r = `` }) {
-  let [i, a] = useState(INITIAL_WRITING_STRIPS),
+function MultiStripWritingPad({ clearToken: e, onHasInkChange: t, onDrawingChange: n, className: r = ``, initialStrips: stripCount = INITIAL_WRITING_STRIPS }) {
+  let [i, a] = useState(stripCount),
     [o, s] = useState(!1),
     l = useRef(null),
     c = useRef(0),
@@ -1495,8 +1662,8 @@ function MultiStripWritingPad({ clearToken: e, onHasInkChange: t, onDrawingChang
       c.current !== 0 && ((c.current = 0), s(!1), n?.(!1), clearDocumentSelection());
     }, [n]);
   (useEffect(() => {
-    (s(!1), (c.current = 0), n?.(!1), a(INITIAL_WRITING_STRIPS), t(!1));
-  }, [e, t, n]),
+    (s(!1), (c.current = 0), n?.(!1), a(stripCount), t(!1));
+  }, [e, t, n, stripCount]),
     useLayoutEffect(() => {
       let e = l.current;
       e &&
@@ -1635,6 +1802,50 @@ function WritingStripCanvas({ clearToken: e, isLast: t, onStroke: n, onInk: i, o
     };
   return <canvas ref={s} className={`writing-strip-canvas`} draggable={false} onPointerDown={h} onPointerMove={g} onPointerUp={_} onPointerCancel={_} onLostPointerCapture={v} onContextMenu={(e) => e.preventDefault()} />;
 }
+function useVerbFamilyWritingMiss() {
+  let familyHadMissRef = useRef(!1);
+  return {
+    trackPrompt: (prompt) => {
+      prompt && isFirstVerbFamilyFormPart(prompt) && (familyHadMissRef.current = !1);
+    },
+    noteFormResult: (wasCorrect) => {
+      wasCorrect || (familyHadMissRef.current = !0);
+    },
+    getFamilyHadMiss: () => familyHadMissRef.current,
+    resetAfterFamily: () => {
+      familyHadMissRef.current = !1;
+    },
+  };
+}
+function WritingMissSayLoop({ forms, onComplete, cueContextCards }) {
+  let familyForms = forms?.length ? forms : [];
+  if (familyForms.length <= 1) {
+    let card = familyForms[0];
+    if (!card) {
+      onComplete?.();
+      return null;
+    }
+    return (
+      <ExposureSayLoopPanel
+        card={card}
+        heading={`Say this word`}
+        onComplete={onComplete}
+        cueContextCards={cueContextCards}
+      />
+    );
+  }
+  return (
+    <VerbFamilySayLoopPanel
+      forms={familyForms}
+      heading={`Say this family`}
+      rounds={TEST_MISS_VERB_FAMILY_SAY_ROUNDS}
+      onComplete={onComplete}
+    />
+  );
+}
+function WritingFamilyMissSayLoop({ forms, onComplete, cueContextCards }) {
+  return <WritingMissSayLoop forms={forms} onComplete={onComplete} cueContextCards={cueContextCards} />;
+}
 function ArabicCardFace({ card: e, className: t = `` }) {
   return e.imageUrl ? (
     <VocabularyImage src={e.imageUrl} alt={e.english} className={`arabic-inline-image ${t}`} />
@@ -1645,25 +1856,46 @@ function ArabicCardFace({ card: e, className: t = `` }) {
   );
 }
 function FlashcardStudyPanel({ prompt: e, isRevealed: t, onReveal: n, onAdvance: r }) {
-  let { card: i, cueSide: a } = e,
-    o = a === `arabic` ? `english` : `arabic`,
-    [s, c] = useState(!1);
+  let { card: i, cueSide: a, verbFamilyForms: o } = e,
+    s = a === `arabic` ? `english` : `arabic`,
+    familyForms = o?.length ? o : null,
+    [u, d] = useState(!1);
   return (
     useEffect(() => {
-      c(!1);
+      d(!1);
     }, [e.card.id, e.cueSide, e.passesRemaining]),
     (
       <Fragment>
         {
           <section className={`writing-flashcard-study flex min-h-0 flex-1 flex-col overflow-hidden py-3`}>
-            {<p className={`section-label shrink-0 text-center`}>{o === `arabic` ? `Recall the Arabic` : `Recall the English meaning`}</p>}
+            {<p className={`section-label shrink-0 text-center`}>{s === `arabic` ? `Recall the Arabic` : `Recall the English meaning`}</p>}
             {
               <div className={`flex min-h-0 flex-1 flex-col justify-center py-4 text-center`}>
-                {<div className={`shrink-0`}>{a === `arabic` ? <ArabicCardFace card={i} className={`writing-cue-copy`} /> : <div className={`writing-cue-copy text-2xl font-semibold text-stone-100`}>{i.english}</div>}</div>}
+                {
+                  <div className={`shrink-0`}>
+                    {a === `arabic` ? (
+                      <ArabicCardFace card={i} className={`writing-cue-copy`} />
+                    ) : familyForms && familyForms.length > 1 ? (
+                      <div className={`writing-cue-copy text-2xl font-semibold text-stone-100`}>{getFamilyMeaningLabel(familyForms)}</div>
+                    ) : (
+                      <EnglishCue card={i} className={`writing-cue-copy mx-auto`} showImageHint={!1} />
+                    )}
+                  </div>
+                }
                 {t ? (
                   <div className={`writing-flashcard-answer-zone mt-6 border-t border-[#d6b56d]/10 pt-6 text-center`}>
                     {<p className={`section-label`}>{`Answer`}</p>}
-                    {<div className={`mt-3`}>{a === `arabic` ? <p className={`text-lg text-stone-300`}>{i.english}</p> : <ArabicCardFace card={i} />}</div>}
+                    {
+                      <div className={`mt-3`}>
+                        {a === `arabic` ? (
+                          <p className={`text-lg text-stone-300`}>{i.english}</p>
+                        ) : familyForms && familyForms.length > 1 ? (
+                          <VerbFamilyParadigmGrid forms={familyForms} activeFormIndex={-1} compact />
+                        ) : (
+                          <ArabicCardFace card={i} />
+                        )}
+                      </div>
+                    }
                   </div>
                 ) : (
                   <div className={`flashcard-study-reveal-zone mt-8`}>
@@ -1676,7 +1908,7 @@ function FlashcardStudyPanel({ prompt: e, isRevealed: t, onReveal: n, onAdvance:
                       <button
                         type={`button`}
                         onClick={() => {
-                          (c(!0), t || n());
+                          (d(!0), t || n());
                         }}
                         className={`nav-text-action mt-3 py-2 text-stone-500`}
                       >{`I don't know`}</button>
@@ -1688,7 +1920,7 @@ function FlashcardStudyPanel({ prompt: e, isRevealed: t, onReveal: n, onAdvance:
           </section>
         }
         {t &&
-          (s ? (
+          (u ? (
             <div className={`shrink-0 border-t border-[#d6b56d]/10 pt-4 text-center`}>{<button type={`button`} onClick={() => r(!1)} className={`nav-text-action text-stone-400`}>{`Continue`}</button>}</div>
           ) : (
             <div className={`shrink-0 grid grid-cols-2 gap-5 border-t border-[#d6b56d]/10 pt-4`}>
@@ -1700,48 +1932,91 @@ function FlashcardStudyPanel({ prompt: e, isRevealed: t, onReveal: n, onAdvance:
     )
   );
 }
-function WritingStudyPanel({ prompt: e, isRevealed: t, onReveal: n, onAdvance: r }) {
-  let { card: i, cueSide: a, verbFamilyForms: o } = e,
+function WritingStudyPanel({ prompt: e, isRevealed: t, onReveal: n, onAdvance: r, cueContextCards: cueContext }) {
+  let { card: i, cueSide: a, verbFamilyForms: o, verbFamilyFormPart: formPart } = e,
     s = a === `arabic` ? `english` : `arabic`,
-    c = o?.length ? getVerbFamilyMeaningLabel(o) : i.english,
+    formPartIndex = getVerbFamilyFormPartIndex(e),
+    formPartCount = getVerbFamilyFormPartCount(e),
     [u, d] = useState(!1),
     [f, p] = useState(0),
     [m, h] = useState(!1),
     [isPadDrawing, setIsPadDrawing] = useState(!1),
+    studyScrollRef = useRef(null),
     g = () => {
       (h(!0), t || n());
     },
     _ = () => p((e) => e + 1);
+  useEffect(() => {
+    (d(!1), p((e) => e + 1), h(!1), setIsPadDrawing(!1));
+  }, [e.card.id, e.cueSide, e.passesRemaining, formPart, formPartIndex]);
+  useLayoutEffect(() => {
+    let el = studyScrollRef.current;
+    el && (el.scrollTop = 0);
+  }, [e.card.id, e.cueSide, e.passesRemaining, formPart]);
+  useLayoutEffect(() => {
+    if (!t) return;
+    let el = studyScrollRef.current;
+    if (!el) return;
+    requestAnimationFrame(() => {
+      let answer = el.querySelector(`.writing-flashcard-answer-zone`);
+      answer ? answer.scrollIntoView({ block: `start` }) : (el.scrollTop = Math.max(0, el.scrollHeight - el.clientHeight));
+    });
+  }, [t, e.card.id, e.cueSide, e.passesRemaining, formPart]);
   return (
-    useEffect(() => {
-      (d(!1), p((e) => e + 1), h(!1), setIsPadDrawing(!1));
-    }, [e.card.id, e.cueSide, e.passesRemaining, o?.length]),
-    (
-      <Fragment>
+    <div className={`writing-flashcard-study-shell flex min-h-0 flex-1 flex-col overflow-hidden`}>
         {
-          <section className={`writing-flashcard-study flex min-h-0 flex-1 flex-col overflow-hidden py-3`}>
-            {<p className={`section-label shrink-0 text-center`}>{o?.length ? `Write every Arabic form` : s === `arabic` ? `Write the Arabic` : `Write the English meaning`}</p>}
+          <section ref={studyScrollRef} className={`writing-flashcard-study min-h-0 flex-1 overflow-y-auto py-3`}>
             {
-              <WritingSurfaceHost isDrawing={isPadDrawing}>
+              <p className={`section-label shrink-0 text-center`}>
+                {formPart ? `Write the Arabic form` : o && o.length > 1 ? `Write every Arabic form` : s === `arabic` ? `Write the Arabic` : `Write the English meaning`}
+              </p>
+            }
+            {
+              <WritingSurfaceHost isDrawing={isPadDrawing} className={`writing-flashcard-surface`}>
                 {
                   <div className={`mt-3 shrink-0 text-center`}>
                     {a === `arabic` ? (
                       <ArabicCardFace card={i} className={`writing-cue-copy`} />
+                    ) : formPart && o?.length ? (
+                      <div>
+                        <div className={`writing-cue-copy text-2xl font-semibold text-stone-100`}>{getFamilyMeaningLabel(o)}</div>
+                        {
+                          <p lang={`ar`} dir={`rtl`} className={`mt-2 text-lg font-semibold text-[#e8d7a1]`}>
+                            {i.label}
+                          </p>
+                        }
+                        {formPartIndex >= 0 && formPartCount > 0 && (
+                          <p className={`mt-1 text-xs text-stone-500`}>
+                            {`Form `}
+                            {formPartIndex + 1}
+                            {` of `}
+                            {formPartCount}
+                          </p>
+                        )}
+                      </div>
+                    ) : o && o.length > 1 ? (
+                      <div className={`writing-cue-copy text-2xl font-semibold text-stone-100`}>{getFamilyMeaningLabel(o)}</div>
                     ) : (
-                      <div className={`writing-cue-copy text-2xl font-semibold text-stone-100`}>{c}</div>
+                      <EnglishCue card={i} contextCards={cueContext} className={`writing-cue-copy`} showImageHint={!1} />
                     )}
                   </div>
                 }
                 {
-                  <div className={`flex min-h-0 flex-1 flex-col`}>
+                  <div className={`flex flex-col`}>
                     {<div className={`flex shrink-0 justify-end pb-1`}>{<button type={`button`} onClick={_} className={`writing-surface-action text-xs font-semibold text-stone-500`}>{`Clear pad`}</button>}</div>}
-                    {<div className={`writing-flashcard-pad py-2 ${t ? `writing-flashcard-pad-revealed` : ``}`}>{<MultiStripWritingPad clearToken={f} onHasInkChange={d} onDrawingChange={setIsPadDrawing} />}</div>}
+                    {
+                      <div className={`writing-flashcard-pad py-2 ${t ? `writing-flashcard-pad-revealed` : ``}`}>
+                        {<MultiStripWritingPad clearToken={f} initialStrips={formPart ? 1 : INITIAL_WRITING_STRIPS} onHasInkChange={d} onDrawingChange={setIsPadDrawing} />}
+                      </div>
+                    }
                     {t ? (
                       <div className={`writing-flashcard-answer-zone mt-2 border-t border-[#d6b56d]/10 pt-4 text-center`}>
                         {<p className={`section-label`}>{`Answer`}</p>}
                         {
                           <div className={`mt-3`}>
-                            {o?.length ? (
+                            {formPart ? (
+                              <ArabicCardFace card={i} />
+                            ) : o && o.length > 1 ? (
                               <VerbFamilyParadigmGrid forms={o} activeFormIndex={-1} compact />
                             ) : a === `arabic` ? (
                               <p className={`text-lg text-stone-300`}>{i.english}</p>
@@ -1769,15 +2044,14 @@ function WritingStudyPanel({ prompt: e, isRevealed: t, onReveal: n, onAdvance: r
         }
         {t &&
           (m ? (
-            <div className={`shrink-0 border-t border-[#d6b56d]/10 pt-4 text-center`}>{<button type={`button`} onClick={() => r(!1)} className={`nav-text-action text-stone-400`}>{`Continue`}</button>}</div>
+            <div className={`writing-flashcard-study-actions px-1 pt-4 text-center`}>{<button type={`button`} onClick={() => r(!1)} className={`nav-text-action text-stone-400`}>{`Continue`}</button>}</div>
           ) : (
-            <div className={`shrink-0 grid grid-cols-2 gap-5 border-t border-[#d6b56d]/10 pt-4`}>
+            <div className={`writing-flashcard-study-actions grid grid-cols-2 gap-5 px-1 pt-4`}>
               {<button type={`button`} onClick={() => r(!1)} className={`nav-text-action justify-self-start text-stone-400`}>{`Incorrect`}</button>}
               {<button type={`button`} onClick={() => r(!0)} className={`nav-text-action justify-self-end text-[#e8d7a1]`}>{`Correct`}</button>}
             </div>
           ))}
-      </Fragment>
-    )
+    </div>
   );
 }
 type MatchTile = {
@@ -1786,21 +2060,23 @@ type MatchTile = {
   text: string;
   side: "arabic" | "english";
   imageUrl?: string;
+  verbFamilyForms?: ExposureCard[];
 };
 const buildMatchTiles = (cards: ExposureCard[]) => {
-  let recognition = prepareVerbBatchRecognition(cards);
-  if (recognition) {
+  let prep = prepareBatchStudyCards(cards);
+  if (cards[0]?.section === `verbs` || cards[0]?.section === `nouns`) {
     return shuffle(
-      recognition.cards.flatMap((card) => {
-        let familyId = getVerbFamilyIdFromCardId(card.id),
-          english = recognition.englishLabelsByFamilyId.get(familyId) ?? getEnglishAnswer(card);
+      prep.cards.flatMap((card) => {
+        let familyId = getBatchFamilyId(card),
+          forms = prep.familyFormsByCardId.get(card.id) ?? [card],
+          english = getFamilyMeaningLabel(forms);
         return [
           {
             id: `${familyId}-arabic`,
             pairId: familyId,
-            text: card.arabic,
+            text: forms.map((form) => form.arabic).join(` · `),
             side: `arabic` as const,
-            imageUrl: card.imageUrl,
+            verbFamilyForms: forms,
           },
           {
             id: `${familyId}-english`,
@@ -1824,14 +2100,13 @@ const buildMatchTiles = (cards: ExposureCard[]) => {
       {
         id: `${card.id}-english`,
         pairId: card.id,
-        text: getEnglishAnswer(card),
+        text: getEnglishAnswerInContext(card, cards),
         side: `english` as const,
       },
     ]),
   );
 };
-const getBatchMatchPairCount = (cards: ExposureCard[]) =>
-  prepareVerbBatchRecognition(cards)?.cards.length ?? cards.length;
+const getBatchMatchPairCount = (cards: ExposureCard[]) => getBatchStudyCardCount(cards);
 const MATCH_RESHUFFLE_MS = 650;
 const MATCH_CLEAR_PAUSE_MS = 700;
 const restoreMatchTiles = (cards, tileIds) => {
@@ -1873,7 +2148,7 @@ function MemoryMatchPhase({ lesson: e, stepId: t, stepTitle: n, completedPhases:
     o.length > 0 &&
       patchBatchSession(t, {
         phase: `memory-match`,
-        cardCount: o.length,
+        cardCount: getBatchStudyCardCount(o),
         memoryMatch: {
           cardCount: s,
           tileIds: d.map((e) => e.id),
@@ -1971,7 +2246,7 @@ function MemoryMatchPhase({ lesson: e, stepId: t, stepTitle: n, completedPhases:
           ? `Clean run ${te + 1}/${k} — tap Start to reveal cards and begin.`
           : `Clean run ${te + 1}/${k} — match every pair before time runs out.`;
   return (
-    <div className={`flex h-full min-h-0 flex-col px-5 py-6`}>
+    <div className={`flex min-h-0 flex-1 flex-col overflow-hidden px-5 py-6`}>
       {<BatchStepMeta stepTitle={n} progress={`${oe}/${s}`} />}
       {<PhaseRail active={`memory-match`} completedPhases={r} lessonId={e.id} stepId={t} disabled={x} onNavigate={a} />}
       {
@@ -2042,7 +2317,9 @@ function MemoryMatchPhase({ lesson: e, stepId: t, stepTitle: n, completedPhases:
                 className={`match-card ${T ? `match-card-visible` : `match-card-facedown`} ${u ? `match-card-compact` : ``} ${t ? `match-card-selected` : ``} ${n ? `match-card-matched` : ``} ${r ? `match-card-wrong` : ``}`}
               >
                 {T ? (
-                  e.side === `arabic` && e.imageUrl ? (
+                  e.side === `arabic` && e.verbFamilyForms && e.verbFamilyForms.length > 1 ? (
+                    <VerbFamilyParadigmGrid forms={e.verbFamilyForms} activeFormIndex={-1} compact />
+                  ) : e.side === `arabic` && e.imageUrl ? (
                     <VocabularyImage src={e.imageUrl} alt={`Arabic`} className={`arabic-match-image${u ? ` arabic-match-image-compact` : ``}`} />
                   ) : (
                     <span lang={e.side === `arabic` ? `ar` : `en`} className={e.side === `arabic` ? `arabic match-card-arabic${u ? ` match-card-arabic-compact` : ``}` : `match-card-english${u ? ` match-card-english-compact` : ``}`}>
@@ -2060,17 +2337,26 @@ function MemoryMatchPhase({ lesson: e, stepId: t, stepTitle: n, completedPhases:
     </div>
   );
 }
+function getMcFamilyForms(batchPrep, lessonCards, card) {
+  return (
+    batchPrep.familyFormsByCardId.get(card.id) ??
+    (card.section === `nouns` ? getNounFamilyFormsForCard(lessonCards, card) : null) ??
+    (card.section === `verbs` ? getVerbFamilyFormsForCard(lessonCards, card) : null) ??
+    [card]
+  );
+}
 function MultipleChoicePhase({ lesson: e, stepId: t, stepTitle: n, completedPhases: r, onPhaseComplete: i, onNavigate: a }) {
   let o = useMemo(() => getBatchExposureCards(e, t), [e, t]),
+    batchStudyCount = useMemo(() => getBatchStudyCardCount(o), [o]),
+    batchPrep = useMemo(() => prepareBatchStudyCards(o), [o]),
     mcCards = useMemo(() => getBatchMultipleChoiceCards(o), [o]),
-    verbRecognition = useMemo(() => prepareVerbBatchRecognition(o), [o]),
     s = useMemo(() => getCachedLessonExposureCards(e), [e]),
     c = batchMultipleChoicePromptTotal(o, BATCH_TEST_MC_CUE_SIDES),
     P = getBatchSession(t),
-    B = isBatchSessionValid(P, o.length) ? P?.multipleChoice : undefined,
+    B = isBatchSessionValid(P, batchStudyCount) ? P?.multipleChoice : undefined,
     F = () => {
       if (B?.queue?.length) {
-        let e = restoreStudyPrompts(mcCards, B.queue);
+        let e = restoreStudyPrompts(mcCards, B.queue, batchPrep.familyFormsByCardId);
         if (e.length) return e;
       }
       return buildBatchMultipleChoiceStudyQueue(o, BATCH_TEST_MC_CUE_SIDES);
@@ -2096,29 +2382,18 @@ function MultipleChoicePhase({ lesson: e, stepId: t, stepTitle: n, completedPhas
           : null,
       [w, s, o],
     ),
-    k = useCallback(
-      (e) => {
-        if (e.cueSide === `arabic`) {
-          if (e.card.section === `verbs`) {
-            return verbRecognition?.englishLabelsByFamilyId.get(getVerbFamilyIdFromCardId(e.card.id)) ?? getEnglishAnswer(e.card);
-          }
-          return getEnglishAnswer(e.card);
-        }
-        return getArabicAnswer(e.card);
-      },
-      [verbRecognition],
-    ),
+    k = useCallback((prompt) => getMultipleChoiceAnswerKey(prompt, o), [o]),
     A = useRef(!1),
     j = useRef(null);
   (useEffect(() => {
-    if (isBatchSessionValid(getBatchSession(t), o.length) && getBatchSession(t)?.multipleChoice) return;
+    if (isBatchSessionValid(getBatchSession(t), batchStudyCount) && getBatchSession(t)?.multipleChoice) return;
     (d(buildBatchMultipleChoiceStudyQueue(o, BATCH_TEST_MC_CUE_SIDES)), p(0), h(MC_SECONDS), _(null), y(null), x(0), C(0), setIsLocked(!1), (A.current = !1));
-  }, [o, t]),
+  }, [o, batchStudyCount, t]),
     useEffect(() => {
       o.length > 0 &&
         patchBatchSession(t, {
           phase: `multiple-choice`,
-          cardCount: o.length,
+          cardCount: batchStudyCount,
           multipleChoice: {
             queue: u.map(serializeStudyPrompt),
             questionIndex: f,
@@ -2127,7 +2402,7 @@ function MultipleChoicePhase({ lesson: e, stepId: t, stepTitle: n, completedPhas
             correctCount: S,
           },
         });
-    }, [t, o.length, u, f, m, b, S]),
+    }, [t, batchStudyCount, o.length, u, f, m, b, S]),
     useEffect(() => {
       (setIsLocked(!1), (A.current = !1), _(null), y(null), h(MC_SECONDS), document.activeElement instanceof HTMLElement && document.activeElement.blur());
     }, [f]));
@@ -2171,13 +2446,13 @@ function MultipleChoicePhase({ lesson: e, stepId: t, stepTitle: n, completedPhas
       [],
     ),
     !w && !E ? (
-      <div className={`flex h-full min-h-0 flex-col px-5 py-6`}>
+      <div className={`flex min-h-0 flex-1 flex-col overflow-hidden px-5 py-6`}>
         {<p className={`section-label`}>{n}</p>}
         {<p className={`mt-4 text-stone-400`}>{`No multiple choice cards found for this ${getLearnUnitLabel(e, t).toLowerCase()}.`}</p>}
       </div>
     ) : (
-      <div className={`flex h-full min-h-0 flex-col px-5 py-6`}>
-        {<BatchStepMeta stepTitle={n} progress={`${S}/${c}`} />}
+      <div className={`flex min-h-0 flex-1 flex-col overflow-hidden px-5 py-6`}>
+        {<BatchStepMeta stepTitle={n} progress={`${E ? c : Math.min(f + (w ? 1 : 0), c)}/${c}`} />}
         {<PhaseRail active={`multiple-choice`} completedPhases={r} lessonId={e.id} stepId={t} disabled={isLocked} onNavigate={a} />}
         {E ? (
           <section className={`flex min-h-0 flex-1 flex-col justify-center py-8 text-center`}>
@@ -2244,13 +2519,20 @@ function MultipleChoicePhase({ lesson: e, stepId: t, stepTitle: n, completedPhas
                   {
                     <div className={`border-y border-[#d6b56d]/10 text-center ${O?.kind === `arabic` ? `py-5` : `py-7`}`}>
                       {w.cueSide === `arabic` ? (
-                        <ArabicCardFace card={w.card} />
-                      ) : (
+                        (() => {
+                          let familyForms = getMcFamilyForms(batchPrep, s, w.card);
+                          return familyForms.length > 1 ? (
+                            <VerbFamilyParadigmGrid forms={familyForms} activeFormIndex={-1} compact />
+                          ) : (
+                            <ArabicCardFace card={w.card} />
+                          );
+                        })()
+                      ) : w.card.section === `verbs` || (w.card.section === `nouns` && getMcFamilyForms(batchPrep, s, w.card).length > 1) ? (
                         <p className={`text-2xl font-semibold text-stone-100`}>
-                          {w.card.section === `verbs`
-                            ? verbRecognition?.englishLabelsByFamilyId.get(getVerbFamilyIdFromCardId(w.card.id)) ?? w.card.english
-                            : w.card.english}
+                          {getFamilyMeaningLabel(getMcFamilyForms(batchPrep, s, w.card))}
                         </p>
+                      ) : (
+                        <EnglishCue card={w.card} contextCards={o} className={`mx-auto max-w-xs`} showImageHint={!1} />
                       )}
                     </div>
                   }
@@ -2278,9 +2560,9 @@ function MultipleChoicePhase({ lesson: e, stepId: t, stepTitle: n, completedPhas
                   {O?.kind === `arabic` && (
                     <div className={`choice-grid-images mt-4 grid`} key={D}>
                       {O.options.map((e, t) => {
-                        let n = getArabicAnswer(e) === k(w),
-                          r = T && g === getArabicAnswer(e),
-                          i = getArabicAnswer(e);
+                        let i = getMultipleChoiceArabicOptionKey(w, e),
+                          n = i === k(w),
+                          r = T && g === i;
                         return (
                           <button
                             key={`${D}-${e.id}`}
@@ -2291,13 +2573,18 @@ function MultipleChoicePhase({ lesson: e, stepId: t, stepTitle: n, completedPhas
                             }}
                             className={`choice-card choice-card-image ${r && n ? `choice-card-correct` : ``} ${r && !n ? `choice-card-wrong` : ``}`}
                           >
-                            {e.imageUrl ? (
-                              <VocabularyImage src={e.imageUrl} alt={e.english} className={`arabic-choice-image`} draggable={false} />
-                            ) : (
-                              <p lang={`ar`} className={`arabic text-xl font-medium text-[#e8d7a1]`}>
-                                {e.arabic}
-                              </p>
-                            )}
+                            {(() => {
+                              let familyForms = getMcFamilyForms(batchPrep, s, e);
+                              return familyForms.length > 1 ? (
+                                <VerbFamilyParadigmGrid forms={familyForms} activeFormIndex={-1} compact />
+                              ) : e.imageUrl ? (
+                                <VocabularyImage src={e.imageUrl} alt={e.english} className={`arabic-choice-image`} draggable={false} />
+                              ) : (
+                                <p lang={`ar`} className={`arabic text-xl font-medium text-[#e8d7a1]`}>
+                                  {e.arabic}
+                                </p>
+                              );
+                            })()}
                           </button>
                         );
                       })}
@@ -2313,57 +2600,88 @@ function MultipleChoicePhase({ lesson: e, stepId: t, stepTitle: n, completedPhas
   );
 }
 function WritingTestPhase({ lesson: e, stepId: t, stepTitle: n, completedPhases: r, completedStepIds: i, completedBatchPhases: l, onPhaseComplete: a, onStepComplete: o, onNavigate: s }) {
-  let c = useMemo(() => getWithinBatchWritingTestCards(e, t), [e, t]),
+  let q = useMemo(() => prepareWithinBatchWritingTestCards(e, t), [e, t]),
+    c = q.cards,
+    stepComplete = i.includes(t),
+    [retryingCompletedTest, setRetryingCompletedTest] = useState(!1),
+    testIsActive = !stepComplete || retryingCompletedTest,
     P = getBatchSession(t),
-    z = useMemo(() => batchWritingTestPromptTotal(c), [c]),
-    B = isBatchSessionValid(P, c.length) ? P?.writingTest : undefined,
+    z = useMemo(() => writingTestFamilyTotal(c, q.familyFormsByCardId), [c, q.familyFormsByCardId]),
+    B = !stepComplete && isBatchSessionValid(P, c.length) ? P?.writingTest : undefined,
+    buildQueue = () => buildWithinBatchWritingStudyQueue(q, BATCH_TEST_WRITING_CONFIG),
     F = () => {
-      if (B?.queue?.length) {
-        let e = restoreStudyPrompts(c, B.queue);
-        if (e.length) return e;
+      if (!testIsActive) return [];
+      if (B?.queue?.length && B.queueVersion === WRITING_QUEUE_LOGIC_VERSION) {
+        let restored = restoreWritingStudyPrompts(c, B.queue, q.familyFormsByCardId);
+        if (restored.length && isValidFamilyWritingQueue(restored)) return restored;
       }
-      return buildBatchWritingStudyQueue(c);
+      return buildQueue();
     },
     [d, f] = useState(F),
-    [p, m] = useState(B?.isRevealed ?? !1),
-    [h, g] = useState(B?.missedCount ?? 0),
-    [R, I] = useState(B?.gradedCount ?? 0),
+    [p, m] = useState(testIsActive ? (B?.isRevealed ?? !1) : !1),
+    [h, g] = useState(testIsActive ? (B?.missedCount ?? 0) : 0),
+    [R, I] = useState(testIsActive ? (B?.gradedCount ?? 0) : 0),
     _ = d[0],
-    v = c.length > 0 && d.length === 0,
+    queueComplete = c.length > 0 && d.length === 0,
+    showComplete = !testIsActive || queueComplete,
     y = useMemo(() => getNextLessonStep(e, t), [e, t]),
-    batchMarkedCompleteRef = useRef(!1);
+    batchMarkedCompleteRef = useRef(!1),
+    verbFamilyMiss = useVerbFamilyWritingMiss(),
+    [sayLoopForms, setSayLoopForms] = useState(null);
   useEffect(() => {
-    if (isBatchSessionValid(getBatchSession(t), c.length) && getBatchSession(t)?.writingTest) return;
-    (f(buildBatchWritingStudyQueue(c)), m(!1), g(0), I(0), (batchMarkedCompleteRef.current = !1));
-  }, [c, t]);
+    verbFamilyMiss.trackPrompt(_);
+  }, [_?.card.id, _?.cueSide, _?.passesRemaining, _?.verbFamilyFormIndex]);
   useEffect(() => {
-    if (!v || batchMarkedCompleteRef.current) return;
+    if (!testIsActive) {
+      (setSayLoopForms(null), (batchMarkedCompleteRef.current = !0));
+      return;
+    }
+    let session = getBatchSession(t);
+    if (isBatchSessionValid(session, c.length) && session?.writingTest) {
+      let restored = restoreWritingStudyPrompts(c, session.writingTest.queue, q.familyFormsByCardId);
+      if (
+        session.writingTest.queueVersion === WRITING_QUEUE_LOGIC_VERSION &&
+        restored.length &&
+        isValidFamilyWritingQueue(restored)
+      ) {
+        return;
+      }
+    }
+    (f(buildQueue()), m(!1), g(0), I(0), setSayLoopForms(null), (batchMarkedCompleteRef.current = !1));
+  }, [c, t, testIsActive, q.familyFormsByCardId]);
+  useEffect(() => {
+    if (!queueComplete || batchMarkedCompleteRef.current || stepComplete) return;
     batchMarkedCompleteRef.current = !0;
     (a(t, `writing-test`), o(t));
-  }, [v, t, a, o]);
+  }, [queueComplete, t, a, o, stepComplete]);
   useEffect(() => {
+    if (stepComplete) return;
     c.length > 0 &&
       patchBatchSession(t, {
         phase: `writing-test`,
         cardCount: c.length,
         writingTest: {
           queue: d.map(serializeStudyPrompt),
+          queueVersion: WRITING_QUEUE_LOGIC_VERSION,
           gradedCount: R,
           missedCount: h,
           isRevealed: p,
         },
       });
-  }, [t, c.length, d, R, h, p]);
-  return !_ && !v ? (
-    <div className={`flex h-full min-h-0 flex-col px-5 py-6`}>
-      {<p className={`section-label`}>{n}</p>}
-      {<p className={`mt-4 text-stone-400`}>{`No test items found for this ${getLearnUnitLabel(e, t).toLowerCase()}.`}</p>}
-    </div>
-  ) : (
-    <div className={`flex h-full min-h-0 flex-col px-5 py-6`}>
+  }, [t, c.length, d, R, h, p, stepComplete]);
+  if (c.length === 0) {
+    return (
+      <div className={`flex min-h-0 flex-1 flex-col overflow-hidden px-5 py-6`}>
+        {<p className={`section-label`}>{n}</p>}
+        {<p className={`mt-4 text-stone-400`}>{`No test items found for this ${getLearnUnitLabel(e, t).toLowerCase()}.`}</p>}
+      </div>
+    );
+  }
+  return (
+    <div className={`flex min-h-0 flex-1 flex-col overflow-hidden px-5 py-6`}>
       {<BatchStepMeta stepTitle={n} progress={`${R}/${z}`} />}
       {<PhaseRail active={`writing-test`} completedPhases={r} lessonId={e.id} stepId={t} onNavigate={s} />}
-      {v ? (
+      {showComplete ? (
         <section className={`flex min-h-0 flex-1 flex-col justify-center py-8 text-center`}>
           {<p className={`section-label`}>{`Complete`}</p>}
           {<p className={`mt-3 text-3xl font-semibold text-[#e8d7a1]`}>{`${getLearnUnitLabel(e, t)} complete`}</p>}
@@ -2373,10 +2691,17 @@ function WritingTestPhase({ lesson: e, stepId: t, stepTitle: n, completedPhases:
               {h}
             </p>
           }
+          {stepComplete && (
+            <button
+              type={`button`}
+              onClick={() => setRetryingCompletedTest(!0)}
+              className={`final-test-link mx-auto mt-8 text-[#e8d7a1]`}
+            >{`Retake test`}</button>
+          )}
           {y ? (
             <Fragment>
               {
-                <button onClick={() => openLessonStep(e.id, y, s, l)} className={`final-test-link mx-auto mt-8 text-[#e8d7a1]`}>
+                <button onClick={() => openLessonStep(e.id, y, s, l)} className={`final-test-link mx-auto ${stepComplete ? `mt-4` : `mt-8`} text-[#e8d7a1]`}>
                   {getStepContinueLabel(y)}
                 </button>
               }
@@ -2406,26 +2731,71 @@ function WritingTestPhase({ lesson: e, stepId: t, stepTitle: n, completedPhases:
           )}
         </section>
       ) : (
-        _ && (
-          <WritingStudyPanel
-            prompt={_}
-            isRevealed={p}
-            onReveal={() => m(!0)}
-            onAdvance={(t) => {
-              (f((n) => {
-                let [r] = n;
-                if (r && !t) {
-                  recordLessonMiss(e.id, r.card.id, r.cueSide);
-                  recordMemorizationMiss(toReviewableCard(e.id)(r.card), e, i);
+        <div className={`study-phase-shell`}>
+          {sayLoopForms ? (
+            <WritingFamilyMissSayLoop
+              forms={sayLoopForms}
+              onComplete={() => {
+                (setSayLoopForms(null),
+                  verbFamilyMiss.resetAfterFamily(),
+                  f((queue) => advanceWritingStudyQueueAfterFamilyMiss(queue)),
+                  m(!1));
+              }}
+            />
+          ) : (
+            _ && (
+            <WritingStudyPanel
+              key={`${_?.card.id}:${_?.cueSide}:${_?.passesRemaining}:${getVerbFamilyFormPartIndex(_)}`}
+              prompt={_}
+              isRevealed={p}
+              cueContextCards={c}
+              onReveal={() => m(!0)}
+              onAdvance={(wasCorrect) => {
+                if (!wasCorrect && _?.verbFamilyFormPart && _?.verbFamilyForms?.length) {
+                  (verbFamilyMiss.noteFormResult(!1),
+                    g((count) => count + 1));
+                  let reviewCard = _.verbFamilyForms[0] ?? _.card;
+                  (recordLessonFamilyMiss(e.id, reviewCard, _.cueSide, _.verbFamilyForms),
+                    recordMemorizationMiss(toReviewableCard(e.id)(reviewCard), e, i),
+                    setSayLoopForms(_.verbFamilyForms),
+                    m(!1));
+                  return;
                 }
-                return advanceStudyPromptQueue(n, t);
-              }),
-                m(!1),
-                _ && shouldIncrementWritingProgress(_, t) && I((e) => e + 1),
-                t || g((e) => e + 1));
-            }}
-          />
-        )
+                if (!wasCorrect && _ && !_.verbFamilyFormPart) {
+                  (recordLessonFamilyMiss(e.id, _.card, _.cueSide, _.verbFamilyForms),
+                    recordMemorizationMiss(toReviewableCard(e.id)(_.card), e, i),
+                    g((count) => count + 1),
+                    setSayLoopForms(_.verbFamilyForms ?? [_.card]),
+                    m(!1));
+                  return;
+                }
+                _?.verbFamilyFormPart && verbFamilyMiss.noteFormResult(wasCorrect);
+                let familyHadMiss = verbFamilyMiss.getFamilyHadMiss(),
+                  familyComplete = _ ? !_.verbFamilyFormPart || isLastVerbFamilyFormPart(_, d.length - 1) : !1,
+                  familyCorrect = wasCorrect && !familyHadMiss;
+                (f((queue) => {
+                  let [prompt] = queue;
+                  if (prompt) {
+                    if (familyComplete && !familyCorrect) {
+                      let reviewCard = prompt.verbFamilyForms?.[0] ?? prompt.card;
+                      (recordLessonFamilyMiss(e.id, reviewCard, prompt.cueSide, prompt.verbFamilyForms),
+                        recordMemorizationMiss(toReviewableCard(e.id)(reviewCard), e, i));
+                    } else if (!prompt.verbFamilyFormPart && !wasCorrect) {
+                      (recordLessonFamilyMiss(e.id, prompt.card, prompt.cueSide, prompt.verbFamilyForms),
+                        recordMemorizationMiss(toReviewableCard(e.id)(prompt.card), e, i));
+                    }
+                  }
+                  return advanceWritingStudyQueue(queue, wasCorrect, familyHadMiss);
+                }),
+                  familyComplete && verbFamilyMiss.resetAfterFamily(),
+                  m(!1),
+                  _ && shouldIncrementWritingProgress(_, wasCorrect, `repeat-until-correct`, familyHadMiss) && I((count) => count + 1),
+                  familyComplete && !familyCorrect && g((count) => count + 1));
+              }}
+            />
+            )
+          )}
+        </div>
       )}
     </div>
   );
@@ -2474,33 +2844,36 @@ function VocabularyTestScreen({ lesson: e, stepId: t, completedStepIds: n, onSte
     o = getVocabularyTestSection(t),
     s = o === `nouns` ? `nouns` : o === `verbs` ? `verbs` : o === `phrases` ? `phrases` : (a?.section ?? null),
     c = useMemo(() => getWritingStudyCardsForStep(e, t), [e, t]),
-    $ = useMemo(() => getCachedLessonExposureCards(e), [e]),
     q = useMemo(() => prepareWritingTestCardsForStep(e, t), [e, t]),
     N = useMemo(() => getWritingConfigForStep(e, t), [e, t]),
-    u = useMemo(() => writingTestPromptTotal(q.cards, N), [q.cards, N]),
+    u = useMemo(() => writingTestFamilyTotal(q.cards, q.familyFormsByCardId), [q.cards, q.familyFormsByCardId]),
     [d, f] = useState(`intro`),
     [p, m] = useState([]),
     [h, g] = useState(!1),
     [_, v] = useState(0),
     [C, w] = useState(0),
-    [M, A] = useState(null),
     y = p[0],
     b = d === `study` && q.cards.length > 0 && p.length === 0,
     x = a?.title ?? `Test`,
-    T = useMemo(() => getNextLessonStep(e, t), [e, t]);
+    T = useMemo(() => getNextLessonStep(e, t), [e, t]),
+    verbFamilyMiss = useVerbFamilyWritingMiss(),
+    [sayLoopForms, setSayLoopForms] = useState(null);
   useEffect(() => {
-    (f(`intro`), m([]), g(!1), v(0), w(0), A(null));
+    verbFamilyMiss.trackPrompt(y);
+  }, [y?.card.id, y?.cueSide, y?.passesRemaining]);
+  useEffect(() => {
+    (f(`intro`), m([]), g(!1), v(0), w(0), setSayLoopForms(null));
   }, [q.cards, N]);
   let S = () => {
-    (f(`study`), m(buildWritingStudyQueue(q.cards, N, R, q.familyFormsByCardId)), g(!1), v(0), w(0), A(null));
+    (f(`study`), m(buildWritingStudyQueue(q.cards, N, R, q.familyFormsByCardId)), g(!1), v(0), w(0), setSayLoopForms(null));
   };
   return (!j && (!o || !s)) || q.cards.length === 0 ? (
-    <div className={`flex h-full min-h-0 flex-col px-5 py-6`}>
+    <div className={`flex min-h-0 flex-1 flex-col overflow-hidden px-5 py-6`}>
       {<p className={`section-label`}>{x}</p>}
       {<p className={`mt-4 text-stone-400`}>{`No cards found for this test.`}</p>}
     </div>
   ) : (
-    <div className={`flex h-full min-h-0 flex-col px-5 py-6`}>
+    <div className={`flex min-h-0 flex-1 flex-col overflow-hidden px-5 py-6`}>
       {
         <div className={`shrink-0 border-b border-[#d6b56d]/10 pb-4`}>
           {
@@ -2527,13 +2900,15 @@ function VocabularyTestScreen({ lesson: e, stepId: t, completedStepIds: n, onSte
           {<p className={`mt-3 text-3xl font-semibold text-[#e8d7a1]`}>{`Ready?`}</p>}
           {
             <p className={`mx-auto mt-4 max-w-xs text-sm leading-6 text-stone-500`}>
-              {j && usesVerbFamilyWritingTest(a)
-                ? `Write every Arabic form for each verb family in this review. Reveal the answer to see the full paradigm, then mark correct or incorrect. Missed items repeat until you know them.`
+              {j && usesFamilyWritingTest(a)
+                ? `Write each Arabic form one at a time for every ${usesNounFamilyWritingTest(a) ? `noun family` : `verb family`} in this review. Reveal the answer to check that form, then mark correct or incorrect. Missed items repeat until you know them.`
                 : j
                   ? `Write the Arabic for each English cue. Missed items repeat until you know them.`
                   : s === `verbs`
-                    ? `Write every Arabic form for each verb family. Reveal the answer to see the full paradigm, then mark correct or incorrect. Missed items repeat until you know them.`
-                    : `Write the Arabic for each English cue once. Reveal the answer, then mark correct or incorrect. Missed items repeat until you know them.`}
+                    ? `Write each Arabic form one at a time for every verb family. Reveal the answer to check that form, then mark correct or incorrect. Missed items repeat until you know them.`
+                    : s === `nouns`
+                      ? `Write each Arabic form one at a time for every noun with a plural. Reveal the answer to check that form, then mark correct or incorrect. Missed items repeat until you know them.`
+                      : `Write the Arabic for each English cue once. Reveal the answer, then mark correct or incorrect. Missed items repeat until you know them.`}
             </p>
           }
           {!j && s && <button onClick={() => f(`review`)} className={`final-test-link mx-auto mt-8 text-[#e8d7a1]`}>{`Review vocabulary`}</button>}
@@ -2564,43 +2939,73 @@ function VocabularyTestScreen({ lesson: e, stepId: t, completedStepIds: n, onSte
           {<SectionVocabularyBrowse lesson={e} section={s} className={`min-h-0 flex-1`} />}
         </Fragment>
       )}
-      {d === `study` && !b && M && (
-        <TestMissSayRemediation
-          card={M}
-          lessonCards={$}
-          onComplete={() => {
-            (m((a) => {
-              let s = advanceStudyPromptQueue(a, !1);
-              return (s.length === 0 && (r(t), f(`complete`)), s);
-            }),
-              A(null));
-          }}
-        />
-      )}
-      {d === `study` && !b && !M && y && (
-        <WritingStudyPanel
-          prompt={y}
-          isRevealed={h}
-          onReveal={() => g(!0)}
-          onAdvance={(i) => {
-            if (!i && y) {
-              (recordLessonFamilyMiss(e.id, y.card, y.cueSide, y.verbFamilyForms),
-                y.verbFamilyForms?.length
-                  ? y.verbFamilyForms.forEach((form) => recordMemorizationMiss(toReviewableCard(e.id)(form), e, n))
-                  : recordMemorizationMiss(toReviewableCard(e.id)(y.card), e, n),
-                A(y.card),
-                g(!1),
-                v((e) => e + 1));
-              return;
-            }
-            (m((a) => {
-              let s = advanceStudyPromptQueue(a, i);
-              return (s.length === 0 && (r(t), f(`complete`)), s);
-            }),
-              g(!1),
-              y && shouldIncrementWritingProgress(y, i) && w((e) => e + 1));
-          }}
-        />
+      {d === `study` && !b && (
+        <div className={`study-phase-shell`}>
+          {sayLoopForms ? (
+            <WritingFamilyMissSayLoop
+              forms={sayLoopForms}
+              onComplete={() => {
+                (setSayLoopForms(null),
+                  verbFamilyMiss.resetAfterFamily(),
+                  m((queue) => {
+                    let next = advanceWritingStudyQueueAfterFamilyMiss(queue);
+                    return (next.length === 0 && (r(t), f(`complete`)), next);
+                  }),
+                  g(!1));
+              }}
+            />
+          ) : (
+            y && (
+            <WritingStudyPanel
+              key={`${y?.card.id}:${y?.cueSide}:${y?.passesRemaining}:${getVerbFamilyFormPartIndex(y)}`}
+              prompt={y}
+              isRevealed={h}
+              cueContextCards={q.cards}
+              onReveal={() => g(!0)}
+              onAdvance={(wasCorrect) => {
+                if (!wasCorrect && y?.verbFamilyFormPart && y?.verbFamilyForms?.length) {
+                  (verbFamilyMiss.noteFormResult(!1), v((count) => count + 1));
+                  let reviewCard = y.verbFamilyForms[0] ?? y.card;
+                  (recordLessonFamilyMiss(e.id, reviewCard, y.cueSide, y.verbFamilyForms),
+                    recordMemorizationMiss(toReviewableCard(e.id)(reviewCard), e, n),
+                    setSayLoopForms(y.verbFamilyForms),
+                    g(!1));
+                  return;
+                }
+                if (!wasCorrect && y && !y.verbFamilyFormPart) {
+                  (recordLessonFamilyMiss(e.id, y.card, y.cueSide, y.verbFamilyForms),
+                    recordMemorizationMiss(toReviewableCard(e.id)(y.card), e, n),
+                    v((count) => count + 1),
+                    setSayLoopForms(y.verbFamilyForms ?? [y.card]),
+                    g(!1));
+                  return;
+                }
+                y?.verbFamilyFormPart && verbFamilyMiss.noteFormResult(wasCorrect);
+                let familyHadMiss = verbFamilyMiss.getFamilyHadMiss(),
+                  familyComplete = y ? !y.verbFamilyFormPart || isLastVerbFamilyFormPart(y, p.length - 1) : !1,
+                  familyCorrect = wasCorrect && !familyHadMiss;
+                if (familyComplete && !familyCorrect && y) {
+                  let reviewCard = y.verbFamilyForms?.[0] ?? y.card;
+                  (recordLessonFamilyMiss(e.id, reviewCard, y.cueSide, y.verbFamilyForms),
+                    recordMemorizationMiss(toReviewableCard(e.id)(reviewCard), e, n),
+                    v((count) => count + 1));
+                } else if (y && !y.verbFamilyFormPart && !wasCorrect) {
+                  (recordLessonFamilyMiss(e.id, y.card, y.cueSide, y.verbFamilyForms),
+                    recordMemorizationMiss(toReviewableCard(e.id)(y.card), e, n),
+                    v((count) => count + 1));
+                }
+                (m((queue) => {
+                  let next = advanceWritingStudyQueue(queue, wasCorrect, familyHadMiss);
+                  return (next.length === 0 && (r(t), f(`complete`)), next);
+                }),
+                  familyComplete && verbFamilyMiss.resetAfterFamily(),
+                  g(!1),
+                  y && shouldIncrementWritingProgress(y, wasCorrect, `repeat-until-correct`, familyHadMiss) && w((count) => count + 1));
+              }}
+            />
+            )
+          )}
+        </div>
       )}
       {(d === `complete` || b) && (
         <section className={`flex min-h-0 flex-1 flex-col justify-center py-8 text-center`}>
@@ -2654,7 +3059,7 @@ function VocabularyTestScreen({ lesson: e, stepId: t, completedStepIds: n, onSte
   );
 }
 function DailyReviewScreen({ completedStepIds: e, onRecordStudyDay: t, onNavigate: n }) {
-  let [r, i] = useState([]),
+  let [reviewQueue, i] = useState([]),
     [a, o] = useState(!0),
     [s, c] = useState(`intro`),
     [u, d] = useState([]),
@@ -2663,19 +3068,29 @@ function DailyReviewScreen({ completedStepIds: e, onRecordStudyDay: t, onNavigat
     [g, _] = useState(!1),
     [v, y] = useState(0),
     [b, x] = useState(0),
-    S = useMemo(() => writingTestPromptTotal(r, DAILY_REVIEW_WRITING_CONFIG), [r]);
+    studyPrep = useMemo(() => prepareDailyReviewStudyCards(reviewQueue), [reviewQueue]),
+    S = useMemo(() => writingTestFamilyTotal(studyPrep.cards, studyPrep.familyFormsByCardId), [studyPrep.cards, studyPrep.familyFormsByCardId]);
   useEffect(() => {
     (o(!0), c(`intro`), d([]), p([]), h([]), _(!1), y(0), x(0));
     let t = window.setTimeout(() => {
-      (i(resolveDailyReviewCards(buildDailyReviewQueue(lessons, e, getReviewableCardsForLesson))), o(!1));
+      (i(buildDailyReviewQueue(lessons, e, getReviewableCardsForLesson)), o(!1));
     }, 0);
     return () => window.clearTimeout(t);
   }, [e]);
   let C = s === `replay` ? f : u,
     w = C[0],
-    T = r.length,
-    E = () => {
-      T !== 0 && (c(`study`), d(buildWritingStudyQueue(r, DAILY_REVIEW_WRITING_CONFIG)), p([]), h([]), _(!1), y(0), x(0));
+    T = studyPrep.cards.length,
+    [sayLoopForms, setSayLoopForms] = useState(null);
+  let E = () => {
+      T !== 0 &&
+        (c(`study`),
+        d(buildDailyReviewFlashcardQueue(reviewQueue, studyPrep)),
+        p([]),
+        h([]),
+        _(!1),
+        y(0),
+        x(0),
+        setSayLoopForms(null));
     },
     D = () => {
       (v > 0 && t(), c(`complete`));
@@ -2686,10 +3101,54 @@ function DailyReviewScreen({ completedStepIds: e, onRecordStudyDay: t, onNavigat
         D();
         return;
       }
-      (p(buildWritingStudyQueue(t, DAILY_REVIEW_WRITING_CONFIG)), c(`replay`), _(!1));
+      let n = prepareDailyReviewStudyCards(reviewQueue.filter((n) => t.some((e) => e.id === n.id)));
+      (p(buildDailyReviewFlashcardQueue(reviewQueue.filter((n) => t.some((e) => e.id === n.id)), n)), c(`replay`), _(!1), setSayLoopForms(null));
+    },
+    finishFamilySayLoop = () => {
+      (setSayLoopForms(null), _(!1));
+      if (s === `replay`) {
+        p((queue) => {
+          let next = advanceStudyPromptQueue(queue, !1);
+          return (next.length === 0 && D(), next);
+        });
+        return;
+      }
+      d((queue) => {
+        let next = advanceStudyPromptQueue(queue, !1);
+        if (next.length === 0) {
+          h((missed) => (O(missed), missed));
+        }
+        return next;
+      });
+    },
+    advanceReview = (wasCorrect, prompt) => {
+      let reviewCardId = getVerbFamilyWritingReviewCardId(prompt);
+      if (s !== `replay`) {
+        gradeDailyReviewPrompt(reviewCardId, wasCorrect);
+        wasCorrect ? y((count) => count + 1) : x((count) => count + 1);
+      }
+      _(!1);
+      if (s === `replay`) {
+        p((queue) => {
+          let next = advanceStudyPromptQueue(queue, wasCorrect);
+          return (next.length === 0 && D(), next);
+        });
+        return;
+      }
+      h((missed) => {
+        let reviewCard = studyPrep.cards.find((card) => card.id === reviewCardId) ?? prompt.card,
+          nextMissed = !wasCorrect && !missed.some((card) => card.id === reviewCard.id) ? [...missed, reviewCard] : missed;
+        return (
+          d((queue) => {
+            let next = advanceStudyPromptQueue(queue, wasCorrect);
+            return (next.length === 0 && O(nextMissed), next);
+          }),
+          nextMissed
+        );
+      });
     };
   return (
-    <div className={`flex h-full min-h-0 flex-col px-5 py-6`}>
+    <div className={`flex min-h-0 flex-1 flex-col overflow-hidden px-5 py-6`}>
       {
         <div className={`shrink-0 border-b border-[#d6b56d]/10 pb-4`}>
           {
@@ -2709,51 +3168,48 @@ function DailyReviewScreen({ completedStepIds: e, onRecordStudyDay: t, onNavigat
       {!a && s === `intro` && (
         <section className={`flex min-h-0 flex-1 flex-col justify-center py-8 text-center`}>
           {<p className={`section-label`}>{`Today`}</p>}
-          {<p className={`mt-3 text-3xl font-semibold text-[#e8d7a1]`}>{T === 0 ? `Caught up` : `${T} cards due`}</p>}
+          {<p className={`mt-3 text-3xl font-semibold text-[#e8d7a1]`}>{T === 0 ? `Caught up` : `${T} items due`}</p>}
           {
             <p className={`mx-auto mt-4 max-w-xs text-sm leading-6 text-stone-500`}>
-              {T === 0 ? `No reviews are due from completed lessons right now.` : `Recall the Arabic for each English cue. Reveal the answer, then mark correct or incorrect. Cards you miss today repeat once at the end.`}
+              {T === 0
+                ? `No reviews are due from completed lessons right now.`
+                : `Flip through each due item. See the English cue, recall the Arabic, then reveal and mark correct or incorrect. Items you miss repeat once at the end.`}
             </p>
           }
           {T > 0 && <button onClick={E} className={`final-test-link mx-auto mt-8 text-[#e8d7a1]`}>{`Start Review`}</button>}
         </section>
       )}
       {!a && (s === `study` || s === `replay`) && w && (
-        <Fragment>
-          {s === `replay` && <p className={`section-label py-4 text-center`}>{`Extra pass`}</p>}
-          {
+        <div className={`study-phase-shell`}>
+          {s === `replay` && !sayLoopForms && <p className={`section-label shrink-0 py-4 text-center`}>{`Extra pass`}</p>}
+          {sayLoopForms ? (
+            <WritingMissSayLoop forms={sayLoopForms} onComplete={finishFamilySayLoop} />
+          ) : (
             <FlashcardStudyPanel
+              key={`${w?.card.id}:${w?.cueSide}:${w?.passesRemaining}`}
               prompt={w}
               isRevealed={g}
               onReveal={() => _(!0)}
               onAdvance={(wasCorrect) => {
                 let prompt = C[0];
                 if (!prompt) return;
-                s !== `replay` && gradeReviewCard(prompt.card.id, wasCorrect);
-                shouldIncrementWritingProgress(prompt, wasCorrect) && y((count) => count + 1);
-                wasCorrect || x((count) => count + 1);
-                _(!1);
-                if (s === `replay`) {
-                  p((queue) => {
-                    let next = advanceStudyPromptQueue(queue, wasCorrect);
-                    return (next.length === 0 && D(), next);
-                  });
+                if (!wasCorrect) {
+                  let reviewCardId = getVerbFamilyWritingReviewCardId(prompt),
+                    reviewCard = studyPrep.cards.find((card) => card.id === reviewCardId) ?? prompt.card,
+                    sayForms = prompt.verbFamilyForms ?? [prompt.card];
+                  s !== `replay` && gradeDailyReviewPrompt(reviewCardId, !1);
+                  s !== `replay` && x((count) => count + 1);
+                  s !== `replay` &&
+                    h((missed) => (missed.some((card) => card.id === reviewCard.id) ? missed : [...missed, reviewCard]));
+                  setSayLoopForms(sayForms);
+                  _(!1);
                   return;
                 }
-                h((missed) => {
-                  let nextMissed = wasCorrect ? missed : [...missed, prompt.card];
-                  return (
-                    d((queue) => {
-                      let next = advanceStudyPromptQueue(queue, wasCorrect);
-                      return (next.length === 0 && O(nextMissed), next);
-                    }),
-                    nextMissed
-                  );
-                });
+                advanceReview(wasCorrect, prompt);
               }}
             />
-          }
-        </Fragment>
+          )}
+        </div>
       )}
       {!a && s === `complete` && (
         <section className={`flex min-h-0 flex-1 flex-col justify-center py-8 text-center`}>
@@ -2785,38 +3241,35 @@ function DailyReviewScreen({ completedStepIds: e, onRecordStudyDay: t, onNavigat
 function LessonReviewScreen({ lesson: e, completedStepIds: t, onStepComplete: n, onNavigate: r }) {
   let i = useMemo(() => getCachedLessonExposureCards(e), [e]),
     q = useMemo(() => prepareLessonTestWritingCards(i), [i]),
-    L = useMemo(
-      () =>
-        buildLessonTestWritingConfig(e.id, (cardId, cueSide) => {
-          let card = q.cards.find((item) => item.id === cardId);
-          return card ? getLessonMissedFamilyCuePasses(e.id, card, cueSide, q.familyFormsByCardId.get(cardId)) : 1;
-        }),
-      [e.id, q],
-    ),
-    P = useMemo(() => writingTestPromptTotal(q.cards, L), [q.cards, L]),
+    L = useMemo(() => buildLessonTestWritingConfig(), []),
+    P = useMemo(() => writingTestFamilyTotal(q.cards, q.familyFormsByCardId), [q.cards, q.familyFormsByCardId]),
     [o, s] = useState(`intro`),
     [c, u] = useState([]),
     [d, f] = useState(!1),
     [p, m] = useState(0),
     [h, g] = useState(0),
-    [M, A] = useState(null),
     _ = c[0],
     v = o === `recall` && q.cards.length > 0 && c.length === 0,
-    y = `${e.id}-final`;
+    y = `${e.id}-final`,
+    verbFamilyMiss = useVerbFamilyWritingMiss(),
+    [sayLoopForms, setSayLoopForms] = useState(null);
+  useEffect(() => {
+    verbFamilyMiss.trackPrompt(_);
+  }, [_?.card.id, _?.cueSide, _?.passesRemaining, _?.verbFamilyFormIndex]);
   return (
     useEffect(() => {
-      (s(`intro`), u([]), f(!1), m(0), g(0), A(null));
+      (s(`intro`), u([]), f(!1), m(0), g(0), setSayLoopForms(null));
     }, [i]),
     useEffect(() => {
       t.includes(y) && syncReviewPool(lessons, t, getReviewableCardsForLesson);
     }, [t, y]),
     i.length === 0 ? (
-      <div className={`flex h-full min-h-0 flex-col px-5 py-6`}>
+      <div className={`flex min-h-0 flex-1 flex-col overflow-hidden px-5 py-6`}>
         {<p className={`section-label`}>{`Lesson Test`}</p>}
         {<p className={`mt-4 text-stone-400`}>{`No lesson items found for this test.`}</p>}
       </div>
     ) : (
-      <div className={`flex h-full min-h-0 flex-col px-5 py-6`}>
+      <div className={`flex min-h-0 flex-1 flex-col overflow-hidden px-5 py-6`}>
         {
           <div className={`shrink-0 border-b border-[#d6b56d]/10 pb-4`}>
             {
@@ -2841,12 +3294,12 @@ function LessonReviewScreen({ lesson: e, completedStepIds: t, onStepComplete: n,
           <section className={`flex min-h-0 flex-1 flex-col justify-center py-8 text-center`}>
             {<p className={`section-label`}>{`All Sections`}</p>}
             {<p className={`mt-3 text-3xl font-semibold text-[#e8d7a1]`}>{`Lesson test`}</p>}
-            {<p className={`mx-auto mt-4 max-w-xs text-sm leading-6 text-stone-500`}>{`Write the Arabic for each English cue across the whole lesson. Verbs are tested as full families. Items you missed earlier in this lesson get an extra pass.`}</p>}
+            {<p className={`mx-auto mt-4 max-w-xs text-sm leading-6 text-stone-500`}>{`Write the Arabic for each English cue across the whole lesson. Verbs are tested form by form within each family. Items you missed earlier in this lesson get an extra pass.`}</p>}
             {
               <div className={`mt-8 grid grid-cols-3 gap-3 border-y border-[#d6b56d]/10 py-4 text-center`}>
                 {
                   <div>
-                    {<p className={`text-xl font-semibold text-stone-100`}>{e.nouns.length}</p>}
+                    {<p className={`text-xl font-semibold text-stone-100`}>{countNounFamilyUnits(e.nouns)}</p>}
                     {<p className={`section-label mt-1`}>{`Nouns`}</p>}
                   </div>
                 }
@@ -2867,59 +3320,84 @@ function LessonReviewScreen({ lesson: e, completedStepIds: t, onStepComplete: n,
             {
               <button
                 onClick={() => {
-                  (s(`recall`), u(buildWritingStudyQueue(q.cards, L, !0, q.familyFormsByCardId)), f(!1), m(0), g(0), A(null));
+                  (s(`recall`), u(buildWritingStudyQueue(q.cards, L, !0, q.familyFormsByCardId)), f(!1), m(0), g(0), setSayLoopForms(null));
                 }}
                 className={`final-test-link mx-auto mt-8 text-[#e8d7a1]`}
               >{`Start test`}</button>
             }
           </section>
         )}
-        {o === `recall` && !v && M && (
-          <TestMissSayRemediation
-            card={M}
-            lessonCards={i}
-            onComplete={() => {
-              (u((queue) => {
-                let next = advanceStudyPromptQueue(queue, !1, `capped-attempts`);
-                if (next.length === 0) {
-                  clearLessonMisses(e.id);
-                  n(y);
-                  s(`complete`);
-                }
-                return next;
-              }),
-                A(null));
-            }}
-          />
-        )}
-        {o === `recall` && !v && !M && _ && (
-          <WritingStudyPanel
-            prompt={_}
-            isRevealed={d}
-            onReveal={() => f(!0)}
-            onAdvance={(wasCorrect) => {
-              if (!wasCorrect && _) {
-                (_.verbFamilyForms?.length
-                  ? _.verbFamilyForms.forEach((form) => recordMemorizationMiss(toReviewableCard(e.id)(form), e, t))
-                  : recordMemorizationMiss(toReviewableCard(e.id)(_.card), e, t),
-                  A(_.card),
-                  f(!1),
-                  m((count) => count + 1));
-                return;
-              }
-              (u((queue) => {
-                let next = advanceStudyPromptQueue(queue, wasCorrect, `capped-attempts`);
-                if (next.length === 0) {
-                  clearLessonMisses(e.id);
-                  n(y);
-                  s(`complete`);
-                }
-                return next;
-              }),
-                f(!1),
-                _ && shouldIncrementWritingProgress(_, wasCorrect, `capped-attempts`) && g((count) => count + 1));
-            }}
-          />
+        {o === `recall` && !v && (
+          <div className={`study-phase-shell`}>
+            {sayLoopForms ? (
+              <WritingFamilyMissSayLoop
+                forms={sayLoopForms}
+                onComplete={() => {
+                  (setSayLoopForms(null),
+                    verbFamilyMiss.resetAfterFamily(),
+                    u((queue) => {
+                      let next = advanceWritingStudyQueueAfterFamilyMiss(queue, `capped-attempts`);
+                      if (next.length === 0) {
+                        clearLessonMisses(e.id);
+                        n(y);
+                        s(`complete`);
+                      }
+                      return next;
+                    }),
+                    f(!1));
+                }}
+              />
+            ) : (
+              _ && (
+              <WritingStudyPanel
+                key={`${_?.card.id}:${_?.cueSide}:${_?.passesRemaining}:${getVerbFamilyFormPartIndex(_)}`}
+                prompt={_}
+                isRevealed={d}
+                cueContextCards={i}
+                onReveal={() => f(!0)}
+                onAdvance={(wasCorrect) => {
+                  if (!wasCorrect && _?.verbFamilyFormPart && _?.verbFamilyForms?.length) {
+                    (verbFamilyMiss.noteFormResult(!1), m((count) => count + 1));
+                    let reviewCard = _.verbFamilyForms[0] ?? _.card;
+                    recordMemorizationMiss(toReviewableCard(e.id)(reviewCard), e, t);
+                    setSayLoopForms(_.verbFamilyForms);
+                    f(!1);
+                    return;
+                  }
+                  if (!wasCorrect && _ && !_.verbFamilyFormPart) {
+                    (recordMemorizationMiss(toReviewableCard(e.id)(_.card), e, t),
+                      m((count) => count + 1),
+                      setSayLoopForms(_.verbFamilyForms ?? [_.card]),
+                      f(!1));
+                    return;
+                  }
+                  _?.verbFamilyFormPart && verbFamilyMiss.noteFormResult(wasCorrect);
+                  let familyHadMiss = verbFamilyMiss.getFamilyHadMiss(),
+                    familyComplete = _ ? !_.verbFamilyFormPart || isLastVerbFamilyFormPart(_, c.length - 1) : !1,
+                    familyCorrect = wasCorrect && !familyHadMiss;
+                  if (familyComplete && !familyCorrect && _) {
+                    let reviewCard = _.verbFamilyForms?.[0] ?? _.card;
+                    (recordMemorizationMiss(toReviewableCard(e.id)(reviewCard), e, t), m((count) => count + 1));
+                  } else if (_ && !_.verbFamilyFormPart && !wasCorrect) {
+                    (recordMemorizationMiss(toReviewableCard(e.id)(_.card), e, t), m((count) => count + 1));
+                  }
+                  (u((queue) => {
+                    let next = advanceWritingStudyQueue(queue, wasCorrect, familyHadMiss, `capped-attempts`);
+                    if (next.length === 0) {
+                      clearLessonMisses(e.id);
+                      n(y);
+                      s(`complete`);
+                    }
+                    return next;
+                  }),
+                    familyComplete && verbFamilyMiss.resetAfterFamily(),
+                    f(!1),
+                    _ && shouldIncrementWritingProgress(_, wasCorrect, `capped-attempts`, familyHadMiss) && g((count) => count + 1));
+                }}
+              />
+              )
+            )}
+          </div>
         )}
         {(o === `complete` || v) && (
           <section className={`flex min-h-0 flex-1 flex-col justify-center py-8 text-center`}>
@@ -2976,7 +3454,7 @@ function SectionVocabularyBrowse({ lesson: e, section: t, className: n = `` }) {
       }
       {
         <div className={`no-scrollbar min-w-0 flex-1 overflow-auto`}>
-          {t === `nouns` && <VocabularyBrowseRows rows={buildNounBrowseRows(e)} showArabic={r} showEnglish={a} />}
+          {t === `nouns` && <NounVocabularyBrowseRows lesson={e} showArabic={r} showEnglish={a} />}
           {t === `verbs` && <VerbVocabularyBrowseRows lesson={e} verbs={e.verbs} showArabic={r} showEnglish={a} />}
           {t === `phrases` && <VocabularyBrowseRows rows={buildPhraseBrowseRows(e)} showArabic={r} showEnglish={a} />}
         </div>
@@ -3043,7 +3521,7 @@ function LessonVocabularyBrowse({ lesson: e, title: t, className: n = `` }) {
           }
           {
             <div className={`no-scrollbar min-w-0 flex-1 overflow-auto pl-4`}>
-              {i === `nouns` && <VocabularyBrowseRows rows={buildNounBrowseRows(e)} showArabic={o} showEnglish={c} />}
+              {i === `nouns` && <NounVocabularyBrowseRows lesson={e} showArabic={o} showEnglish={c} />}
               {i === `verbs` && <VerbVocabularyBrowseRows lesson={e} verbs={e.verbs} showArabic={o} showEnglish={c} />}
               {i === `phrases` && <VocabularyBrowseRows rows={buildPhraseBrowseRows(e)} showArabic={o} showEnglish={c} />}
             </div>
@@ -3060,6 +3538,79 @@ function VocabularyBrowseBatchDivider({ batchIndex: e, unitLabel: t = `Batch` })
     </div>
   );
 }
+function BrowseMaskedText({ visible: e, children: t, className: n = ``, dir: r, lang: i, placeholderClassName: a = `` }) {
+  return (
+    <div className={`browse-text-slot ${n}`} dir={r} lang={i}>
+      {<span className={e ? `` : `invisible`}>{t}</span>}
+      {!e && <span className={`browse-text-placeholder ${a}`} aria-hidden={`true`}>{`••••`}</span>}
+    </div>
+  );
+}
+function BrowseEnglishMeaning({ visible: e, children: t }) {
+  return (
+    <BrowseMaskedText visible={e} className={`verb-family-meaning browse-english-meaning mb-3`} dir={`ltr`} lang={`en`}>
+      {t}
+    </BrowseMaskedText>
+  );
+}
+function BrowseArabicSlot({ visible: e, imageUrl: t, alt: n, text: r, className: i = `arabic-review-image` }) {
+  return (
+    <div className={`browse-arabic-slot`}>
+      {e ? (
+        t ? (
+          <VocabularyImage src={t} alt={n} className={i} />
+        ) : (
+          <p className={`arabic text-xl font-medium text-[#e8d7a1]`}>{r}</p>
+        )
+      ) : (
+        <div className={`browse-arabic-placeholder`} aria-hidden={`true`}>
+          {`••••`}
+        </div>
+      )}
+    </div>
+  );
+}
+function NounVocabularyBrowseRows({ lesson: e, showArabic: t, showEnglish: n }) {
+  let r = buildNounBrowseFamilies(e);
+  return (
+    <section>
+      {r.length === 0 ? (
+        <p className={`py-5 text-sm text-stone-500`}>{`No items to show.`}</p>
+      ) : (
+        r.map((a, o) => (
+          <Fragment key={a.id}>
+            {(o === 0 || a.batchIndex !== r[o - 1].batchIndex) && <VocabularyBrowseBatchDivider batchIndex={a.batchIndex} unitLabel={`Batch`} />}
+            <div className={`border-b border-[#d6b56d]/10 py-4`}>
+              {<BrowseEnglishMeaning visible={n}>{a.meaning}</BrowseEnglishMeaning>}
+              {
+                <div
+                  className={`grid gap-3 text-sm ${a.forms.length > 1 ? `grid-cols-2` : `mx-auto grid-cols-1 max-w-[11rem]`}`}
+                  dir={`rtl`}
+                >
+                  {NOUN_FORM_ORDER.map((i) => {
+                    let c = a.forms.find((form) => form.key === i);
+                    if (!c) return null;
+                    return (
+                      <div key={i} className={`relative border-s border-[#d6b56d]/10 ps-3 pe-10`}>
+                        {c.weak && <p className={`absolute end-0 top-0 text-[0.55rem] font-medium uppercase tracking-widest text-[#d6b56d]/55`}>{`weak`}</p>}
+                        {
+                          <p className={`text-xs font-semibold text-[#d6b56d]/60`} lang={`ar`} dir={`rtl`}>
+                            {NOUN_FORM_ARABIC_LABELS[i]}
+                          </p>
+                        }
+                        {<BrowseArabicSlot visible={t} imageUrl={c.imageUrl} alt={NOUN_FORM_ARABIC_LABELS[i]} text={c.arabic} />}
+                      </div>
+                    );
+                  })}
+                </div>
+              }
+            </div>
+          </Fragment>
+        ))
+      )}
+    </section>
+  );
+}
 function VocabularyBrowseRows({ rows: e, showArabic: t, showEnglish: n }) {
   return (
     <section>
@@ -3073,16 +3624,12 @@ function VocabularyBrowseRows({ rows: e, showArabic: t, showEnglish: n }) {
               {r.weak && <p className={`absolute right-0 top-3 text-[0.55rem] font-medium uppercase tracking-widest text-[#d6b56d]/55`}>{`weak`}</p>}
               {
                 <div className={`grid grid-cols-2 gap-3 pr-12`}>
-                  {t ? (
-                    r.imageUrl ? (
-                      <VocabularyImage src={r.imageUrl} alt={r.english} className={`arabic-review-image`} />
-                    ) : (
-                      <p className={`arabic text-xl font-medium text-[#e8d7a1]`}>{r.arabic}</p>
-                    )
-                  ) : (
-                    <p className={`font-medium text-stone-600`}>{`••••`}</p>
-                  )}
-                  {<p className={`font-medium text-stone-300`}>{n ? r.english : `••••`}</p>}
+                  {<BrowseArabicSlot visible={t} imageUrl={r.imageUrl} alt={r.english} text={r.arabic} />}
+                  {
+                    <BrowseMaskedText visible={n} className={`font-medium text-stone-300`} dir={`ltr`} lang={`en`}>
+                      {formatEnglishCueText({ id: r.id, english: r.english, arabic: r.arabic, section: `phrases` })}
+                    </BrowseMaskedText>
+                  }
                 </div>
               }
             </div>
@@ -3103,36 +3650,45 @@ function VerbVocabularyBrowseRows({ lesson: e, verbs: t, showArabic: n, showEngl
           <Fragment key={o.verb.id}>
             {(s === 0 || o.batchIndex !== a[s - 1].batchIndex) && <VocabularyBrowseBatchDivider batchIndex={o.batchIndex} unitLabel={`Batch`} />}
             <div className={`border-b border-[#d6b56d]/10 py-4`}>
-              {r && (
-                <p lang={`en`} dir={`ltr`} className={`verb-family-meaning mb-3`}>
-                  {getVerbFamilyBrowseMeaning(o.verb)}
-                </p>
-              )}
+              {<BrowseEnglishMeaning visible={r}>{getVerbFamilyBrowseMeaning(o.verb)}</BrowseEnglishMeaning>}
               {
-                <div className={`grid grid-cols-2 gap-3 text-sm`} dir={`rtl`}>
-                  {VERB_FORM_ORDER.map((i) => {
-                    let c = o.verb[i];
-                    if (!c) return null;
-                    return (
-                      <div key={i} className={`relative border-s border-[#d6b56d]/10 ps-3 pe-10`}>
-                        {o.verb.hardForms?.[i] && <p className={`absolute end-0 top-0 text-[0.55rem] font-medium uppercase tracking-widest text-[#d6b56d]/55`}>{`weak`}</p>}
+                <div
+                  className={`grid gap-3 text-sm ${getVerbBrowseCells(o.verb).length > 2 ? `grid-cols-2` : `mx-auto grid-cols-1 max-w-[11rem]`}`}
+                  dir={`rtl`}
+                >
+                  {getVerbBrowseCells(o.verb).map((cell) =>
+                    cell.kind === `harf` ? (
+                      <div key={`harf`} className={`relative border-s border-[#d6b56d]/10 ps-3 pe-10`}>
                         {
                           <p className={`text-xs font-semibold text-[#d6b56d]/60`} lang={`ar`} dir={`rtl`}>
-                            {getVerbFormLabel(i)}
+                            {VERB_HARF_ARABIC_LABEL}
                           </p>
                         }
-                        {n ? (
-                          o.verb.images?.[i] ? (
-                            <VocabularyImage src={vocabularyImageUrl(e, o.verb.images[i])} alt={getVerbFormLabel(i)} className={`arabic-review-image`} />
-                          ) : (
-                            <p className={`arabic text-xl font-medium text-[#e8d7a1]`}>{c}</p>
-                          )
-                        ) : (
-                          <p className={`arabic text-xl font-medium text-[#e8d7a1]`}>{`••••`}</p>
-                        )}
+                        {
+                          <BrowseMaskedText visible={n} className={`arabic text-xl font-medium text-[#e8d7a1]`} dir={`rtl`} lang={`ar`}>
+                            {cell.arabic}
+                          </BrowseMaskedText>
+                        }
                       </div>
-                    );
-                  })}
+                    ) : (
+                      <div key={cell.key} className={`relative border-s border-[#d6b56d]/10 ps-3 pe-10`}>
+                        {cell.weak && <p className={`absolute end-0 top-0 text-[0.55rem] font-medium uppercase tracking-widest text-[#d6b56d]/55`}>{`weak`}</p>}
+                        {
+                          <p className={`text-xs font-semibold text-[#d6b56d]/60`} lang={`ar`} dir={`rtl`}>
+                            {getVerbFormLabel(cell.key)}
+                          </p>
+                        }
+                        {
+                          <BrowseArabicSlot
+                            visible={n}
+                            imageUrl={cell.imageUrl ? vocabularyImageUrl(e, cell.imageUrl) : undefined}
+                            alt={getVerbFormLabel(cell.key)}
+                            text={cell.arabic}
+                          />
+                        }
+                      </div>
+                    ),
+                  )}
                 </div>
               }
             </div>
@@ -3156,16 +3712,5 @@ function ProgressBar({ value: e, dark: t = !1 }) {
     </div>
   );
 }
-const startOfflineWarm = () => {
-  void warmVocabularyCache();
-};
-registerSW({
-  immediate: true,
-  onRegisteredSW() {
-    startOfflineWarm();
-  },
-  onOfflineReady() {
-    startOfflineWarm();
-  },
-});
+bootstrapPwa();
 createRoot(document.getElementById("root")!).render(<App />);
