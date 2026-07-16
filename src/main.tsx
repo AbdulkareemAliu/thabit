@@ -3312,7 +3312,7 @@ function LessonReviewScreen({ lesson: e, completedStepIds: t, onStepComplete: n,
           <section className={`flex min-h-0 flex-1 flex-col justify-center py-8 text-center`}>
             {<p className={`section-label`}>{`All Sections`}</p>}
             {<p className={`mt-3 text-3xl font-semibold text-[#e8d7a1]`}>{`Lesson test`}</p>}
-            {<p className={`mx-auto mt-4 max-w-xs text-sm leading-6 text-stone-500`}>{`Write the Arabic for each English cue across the whole lesson. Verbs are tested form by form within each family. Items you missed earlier in this lesson get an extra pass.`}</p>}
+            {<p className={`mx-auto mt-4 max-w-xs text-sm leading-6 text-stone-500`}>{`Write the Arabic for each English cue across the whole lesson. Verbs are tested form by form within each family. Incorrect items repeat until you know them.`}</p>}
             {
               <div className={`mt-8 grid grid-cols-3 gap-3 border-y border-[#d6b56d]/10 py-4 text-center`}>
                 {
@@ -3354,7 +3354,7 @@ function LessonReviewScreen({ lesson: e, completedStepIds: t, onStepComplete: n,
                   (setSayLoopForms(null),
                     verbFamilyMiss.resetAfterFamily(),
                     u((queue) => {
-                      let next = advanceWritingStudyQueueAfterFamilyMiss(queue, `capped-attempts`);
+                      let next = advanceWritingStudyQueueAfterFamilyMiss(queue);
                       if (next.length === 0) {
                         clearLessonMisses(e.id);
                         n(y);
@@ -3400,7 +3400,7 @@ function LessonReviewScreen({ lesson: e, completedStepIds: t, onStepComplete: n,
                     (recordMemorizationMiss(toReviewableCard(e.id)(_.card), e, t), m((count) => count + 1));
                   }
                   (u((queue) => {
-                    let next = advanceWritingStudyQueue(queue, wasCorrect, familyHadMiss, `capped-attempts`);
+                    let next = advanceWritingStudyQueue(queue, wasCorrect, familyHadMiss);
                     if (next.length === 0) {
                       clearLessonMisses(e.id);
                       n(y);
@@ -3410,7 +3410,7 @@ function LessonReviewScreen({ lesson: e, completedStepIds: t, onStepComplete: n,
                   }),
                     familyComplete && verbFamilyMiss.resetAfterFamily(),
                     f(!1),
-                    _ && shouldIncrementWritingProgress(_, wasCorrect, `capped-attempts`, familyHadMiss) && g((count) => count + 1));
+                    _ && shouldIncrementWritingProgress(_, wasCorrect, `repeat-until-correct`, familyHadMiss) && g((count) => count + 1));
                 }}
               />
               )
