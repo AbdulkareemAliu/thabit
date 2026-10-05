@@ -25,6 +25,7 @@ const MAX_INTERVAL_7_SPREAD_MIGRATION_KEY = "thabit.migration.maxInterval7Spread
 const REVIEW_CONTENT_ID_MIGRATION_KEY = "thabit.migration.reviewContentIds_v1";
 const NOUN_REVIEW_INSERT_MIGRATION_KEY = "thabit.migration.reviewNounInsert_v1";
 const MISS_STACK_SPREAD_MIGRATION_KEY = "thabit.migration.missStackSpread_v1";
+const REVIEW_BACKLOG_BALANCE_MIGRATION_KEY = "thabit.migration.reviewBacklogBalance_v1";
 /** Default used by one-time interval-cap migrations. Live caps read `getSettings()`. */
 export const MAX_INTERVAL_DAYS = 7;
 const DEFAULT_EASE = 2.5;
@@ -296,6 +297,45 @@ export const applyMaxInterval7SpreadMigration = (
     completedStepIds,
     getCardsForLesson,
   );
+};
+
+/** Repair the large single-day piles left by the old calendar shift and interval migrations. */
+export const applyReviewBacklogBalanceMigration = (
+  allLessons: Lesson[],
+  completedStepIds: string[],
+  getCardsForLesson: (lesson: Lesson) => ReviewableCard[],
+) => {
+  if (window.localStorage.getItem(REVIEW_BACKLOG_BALANCE_MIGRATION_KEY)) return false;
+
+  const today = todayKey();
+  const windowDays = Math.max(1, maxIntervalDays() + scheduleJitterDays());
+  const horizon = addDays(today, windowDays);
+  const { cardById } = buildEligibleCardIndex(allLessons, completedStepIds, getCardsForLesson);
+  const cards = readReviewCards();
+  const eligible = Object.values(cards).filter((record) => cardById.has(record.cardId) && record.dueAt <= horizon);
+  const dueNow = eligible.filter((record) => record.dueAt <= today).length;
+  const future = eligible.filter((record) => record.dueAt > today);
+  const bucketCounts = Array.from({ length: windowDays }, (_, offset) =>
+    future.filter((record) => record.dueAt === addDays(today, offset)).length,
+  );
+  const target = Math.ceil(eligible.length / windowDays);
+  const largestFuturePile = Math.max(0, ...bucketCounts.slice(1), future.filter((record) => record.dueAt === horizon).length);
+
+  if (future.length >= 10 && largestFuturePile > Math.max(10, target * 2)) {
+    const counts = Array.from({ length: windowDays }, (_, offset) => (offset === 0 ? dueNow : 0));
+    future.sort((left, right) => left.dueAt.localeCompare(right.dueAt) || left.cardId.localeCompare(right.cardId));
+    for (const record of future) {
+      const smallest = Math.min(...counts);
+      const offset = counts.indexOf(smallest);
+      record.dueAt = addDays(today, offset);
+      counts[offset] += 1;
+    }
+    writeReviewCards(cards);
+    window.localStorage.removeItem("thabit.dailyReviewSession");
+  }
+
+  window.localStorage.setItem(REVIEW_BACKLOG_BALANCE_MIGRATION_KEY, "1");
+  return future.length >= 10 && largestFuturePile > Math.max(10, target * 2);
 };
 
 /** Merge legacy per-form verb review records into one schedule per family. */
@@ -587,6 +627,7 @@ export const shiftOverdueReviewCalendar = (
 };
 
 export const syncReviewPool = (allLessons: Lesson[], completedStepIds: string[], getCardsForLesson: (lesson: Lesson) => ReviewableCard[]) => {
+  applyStaggeredReviewScheduleMigration();
   applyVerbFamilyReviewMigration(allLessons);
   applyNounFamilyReviewMigration(allLessons);
   applyReviewContentIdMigration(allLessons);
@@ -616,6 +657,8 @@ export const syncReviewPool = (allLessons: Lesson[], completedStepIds: string[],
   }
 
   if (changed) writeReviewCards(cards);
+  applyMaxInterval7SpreadMigration(allLessons, completedStepIds, getCardsForLesson);
+  applyReviewBacklogBalanceMigration(allLessons, completedStepIds, getCardsForLesson);
 };
 
 const scheduleLearningSuccess = (record: ReviewCardRecord, today: string): ReviewCardRecord => {
