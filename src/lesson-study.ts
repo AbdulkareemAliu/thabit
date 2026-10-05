@@ -1,20 +1,21 @@
 import { lessons } from "./data";
+import { formatEnglishCueText } from "./english-cue";
 import {
   getBatchExposureCards,
   getCachedLessonExposureCards,
+  getFamilyMeaningLabel,
   getNounFamilyIdFromCardId,
   getSectionExposureCards,
   getVerbFamilyIdFromCardId,
   prepareNounBatchReviewTestCards,
   prepareVerbBatchReviewTestCards,
 } from "./exposure-cards";
-import type { ReviewableCard } from "./review";
-import { gradeReviewCard } from "./review";
+import type { ReviewableCard, ReviewCardState } from "./review";
+import { gradeReviewCard, listEligibleReviewRecords } from "./review";
 import {
   BATCH_REVIEW_WRITING_CONFIG,
   BATCH_TEST_WRITING_CONFIG,
   SECTION_FINALE_WRITING_CONFIG,
-  getDailyReviewEnglishKey,
   type WritingQueueConfig,
 } from "./study-queue";
 import type { ExposureCard, Lesson, LessonStep, SectionKind } from "./types";
@@ -24,10 +25,7 @@ export type WritingTestCardPrep = {
   familyFormsByCardId: Map<string, ExposureCard[]>;
 };
 
-export type DailyReviewStudyPrep = WritingTestCardPrep & {
-  /** Full-lesson Arabic answers keyed by exact English cue. */
-  dailyReviewAnswerCardsByKey: Map<string, ExposureCard[]>;
-};
+export type DailyReviewStudyPrep = WritingTestCardPrep;
 
 export const usesVerbFamilyWritingTest = (step: LessonStep | undefined) =>
   step?.section === "verbs" &&
@@ -48,6 +46,45 @@ export const toReviewableCard =
     section: card.section,
     label: card.label,
   });
+
+export type ReviewScheduleItem = {
+  cardId: string;
+  lessonNumber: number;
+  section: SectionKind;
+  english: string;
+  state: ReviewCardState;
+  dueAt: string;
+  intervalDays: number;
+  lastReviewedAt?: string;
+};
+
+export const getReviewScheduleItems = (completedStepIds: string[]): ReviewScheduleItem[] => {
+  const listed = listEligibleReviewRecords(lessons, completedStepIds, getReviewableCardsForLesson);
+  const prep = prepareDailyReviewStudyCards(listed.map(({ card }) => card));
+  const exposureById = new Map(prep.cards.map((card) => [card.id, card]));
+
+  return listed.map(({ record, card, lesson }) => {
+    const exposure = exposureById.get(card.id);
+    const forms = prep.familyFormsByCardId.get(card.id);
+    const english =
+      forms && forms.length > 0
+        ? getFamilyMeaningLabel(forms)
+        : exposure
+          ? formatEnglishCueText(exposure)
+          : card.label || card.id;
+
+    return {
+      cardId: record.cardId,
+      lessonNumber: lesson.number,
+      section: card.section,
+      english,
+      state: record.state,
+      dueAt: record.dueAt,
+      intervalDays: record.intervalDays,
+      lastReviewedAt: record.lastReviewedAt,
+    };
+  });
+};
 
 export const getReviewableCardsForLesson = (lesson: Lesson): ReviewableCard[] => {
   const allCards = getCachedLessonExposureCards(lesson);
@@ -133,30 +170,10 @@ export const prepareDailyReviewStudyCards = (reviewableCards: ReviewableCard[]):
   const verbPrep = prepareVerbBatchReviewTestCards(verbExposureCards);
   const nounPrep = prepareNounBatchReviewTestCards(nounExposureCards);
   const phraseCards = resolveDailyReviewCards(reviewableCards.filter((card) => card.section === "phrases"));
-  const dailyReviewAnswerCardsByKey = new Map<string, ExposureCard[]>();
-
-  for (const lessonId of new Set(reviewableCards.map((card) => card.lessonId))) {
-    const lesson = lessonById.get(lessonId);
-    if (!lesson) continue;
-
-    const allLessonCards = getCachedLessonExposureCards(lesson);
-    const allNounPrep = prepareNounBatchReviewTestCards(allLessonCards.filter((card) => card.section === "nouns"));
-    const allVerbPrep = prepareVerbBatchReviewTestCards(allLessonCards.filter((card) => card.section === "verbs"));
-    const allReviewCards = [...allLessonCards.filter((card) => card.section === "phrases"), ...allNounPrep.cards, ...allVerbPrep.cards];
-    const allFamilyFormsByCardId = new Map([...allNounPrep.familyFormsByCardId, ...allVerbPrep.familyFormsByCardId]);
-
-    for (const card of allReviewCards) {
-      const key = getDailyReviewEnglishKey(lessonId, card);
-      const answers = dailyReviewAnswerCardsByKey.get(key) ?? [];
-      answers.push(...(allFamilyFormsByCardId.get(card.id) ?? [card]));
-      dailyReviewAnswerCardsByKey.set(key, answers);
-    }
-  }
 
   return {
     cards: [...phraseCards, ...nounPrep.cards, ...verbPrep.cards],
     familyFormsByCardId: new Map([...nounPrep.familyFormsByCardId, ...verbPrep.familyFormsByCardId]),
-    dailyReviewAnswerCardsByKey,
   };
 };
 

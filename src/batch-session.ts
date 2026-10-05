@@ -1,5 +1,5 @@
 import { expandVerbFamilyWritingPrompt } from "./study-queue";
-import { resolveFamilyFormsForCard } from "./exposure-cards";
+import { getVerbFamilyHarf, resolveFamilyFormsForCard, VERB_HARF_ARABIC_LABEL } from "./exposure-cards";
 import type { ExposureCard } from "./types";
 import type { BatchPhase } from "./types";
 import type { CueSide, StudyPrompt } from "./study-queue";
@@ -16,6 +16,8 @@ export type SerializedStudyPrompt = {
   verbFamilyFormPart?: boolean;
   verbFamilyFormIndex?: number;
   verbFamilyFormCount?: number;
+  dailyReviewCardIds?: string[];
+  lessonLabel?: string;
 };
 
 export type ExposureSessionState = {
@@ -148,6 +150,8 @@ export const serializeStudyPrompt = (prompt: StudyPrompt): SerializedStudyPrompt
   verbFamilyFormPart: prompt.verbFamilyFormPart,
   verbFamilyFormIndex: prompt.verbFamilyFormIndex,
   verbFamilyFormCount: prompt.verbFamilyFormCount,
+  dailyReviewCardIds: prompt.dailyReviewCardIds,
+  lessonLabel: prompt.lessonLabel,
 });
 
 const findFamilyFormCard = (cardId: string, familyFormsByCardId?: Map<string, ExposureCard[]>) => {
@@ -155,6 +159,33 @@ const findFamilyFormCard = (cardId: string, familyFormsByCardId?: Map<string, Ex
   for (const forms of familyFormsByCardId.values()) {
     const match = forms.find((form) => form.id === cardId);
     if (match) return match;
+  }
+  return undefined;
+};
+
+const findFamilyHarfCard = (
+  cardId: string,
+  familyFormsByCardId?: Map<string, ExposureCard[]>,
+): { card: ExposureCard; forms: ExposureCard[] } | undefined => {
+  if (!familyFormsByCardId || !cardId.endsWith("-harf")) return undefined;
+  for (const forms of familyFormsByCardId.values()) {
+    const harf = getVerbFamilyHarf(forms)?.trim();
+    if (!harf) continue;
+    const head = forms[0];
+    if (!head) continue;
+    const familyPrefix = cardId.slice(0, -"-harf".length);
+    if (!head.id.startsWith(familyPrefix)) continue;
+    return {
+      forms,
+      card: {
+        id: cardId,
+        arabic: harf,
+        english: head.english,
+        section: head.section,
+        label: VERB_HARF_ARABIC_LABEL,
+        harf,
+      },
+    };
   }
   return undefined;
 };
@@ -168,12 +199,13 @@ export const restoreStudyPrompts = (
   const cardById = new Map(cards.map((card) => [card.id, card]));
   const restored: StudyPrompt[] = [];
   for (const item of serialized) {
-    const card = cardById.get(item.cardId) ?? findFamilyFormCard(item.cardId, familyFormsByCardId);
+    const harfMatch = findFamilyHarfCard(item.cardId, familyFormsByCardId);
+    const card = cardById.get(item.cardId) ?? findFamilyFormCard(item.cardId, familyFormsByCardId) ?? harfMatch?.card;
     if (!card) continue;
-    const verbFamilyForms = resolveFamilyFormsForCard(card, familyFormsByCardId);
+    const verbFamilyForms = harfMatch?.forms ?? resolveFamilyFormsForCard(card, familyFormsByCardId);
     const resolvedFormIndex =
       item.verbFamilyFormIndex ??
-      (item.verbFamilyFormPart && verbFamilyForms
+      (item.verbFamilyFormPart && verbFamilyForms && !harfMatch
         ? verbFamilyForms.findIndex((form) => form.id === card.id)
         : undefined);
     restored.push({
@@ -184,7 +216,9 @@ export const restoreStudyPrompts = (
       verbFamilyForms,
       verbFamilyFormPart: item.verbFamilyFormPart,
       verbFamilyFormIndex: resolvedFormIndex !== undefined && resolvedFormIndex >= 0 ? resolvedFormIndex : item.verbFamilyFormIndex,
-      verbFamilyFormCount: item.verbFamilyFormCount ?? verbFamilyForms?.length,
+      verbFamilyFormCount: item.verbFamilyFormCount ?? (verbFamilyForms ? verbFamilyForms.length + (getVerbFamilyHarf(verbFamilyForms)?.trim() ? 1 : 0) : undefined),
+      dailyReviewCardIds: item.dailyReviewCardIds,
+      lessonLabel: item.lessonLabel,
     });
   }
   if (!expandFamilyBlocks) return restored;

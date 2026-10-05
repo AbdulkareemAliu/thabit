@@ -11,6 +11,12 @@ import { annotateEnglishCollisions } from "./english-cue";
 import { PHRASE_BATCH_SIZE } from "./config";
 import { getBatchSizes } from "./data";
 import type { ExposureCard, Lesson, NounItem, SectionKind, VerbFamily, VerbFormKey, NounFormKey } from "./types";
+import {
+  lessonExtrasAsNounItems,
+  lessonExtrasAsPhraseItems,
+  getLessonExtrasRevision,
+} from "./lesson-extras";
+import { applyWordEdit, applyWordEditFields, getWordEdit, getWordEditRevision } from "./word-edits";
 
 export const vocabularyImageUrl = (lesson: Lesson, relativePath?: string) => {
   if (!relativePath) return undefined;
@@ -39,8 +45,8 @@ export const VERB_FORM_ARABIC_LABELS: Record<VerbFormKey, string> = {
   present: "المضارع",
   command: "الأمر",
   masdar: "المصدر",
-  passive: "المجهول",
   activeParticiple: "اسم فاعل",
+  passive: "اسم مفعول",
 };
 
 export const VERB_HARF_ARABIC_LABEL = "الحرف";
@@ -50,7 +56,7 @@ const VERB_FORM_SPECS = (Object.keys(VERB_FORM_ARABIC_LABELS) as VerbFormKey[]).
   label: VERB_FORM_ARABIC_LABELS[key],
 }));
 
-/** Canonical verb form order within a family (past → active participle). */
+/** Canonical verb form order within a family (past → ism maf'ool). */
 export const VERB_FORM_ORDER: VerbFormKey[] = VERB_FORM_SPECS.map(({ key }) => key);
 
 const LEGACY_VERB_FORM_LABELS: Record<string, VerbFormKey> = {
@@ -59,6 +65,9 @@ const LEGACY_VERB_FORM_LABELS: Record<string, VerbFormKey> = {
   Command: "command",
   Masdar: "masdar",
   Passive: "passive",
+  "المجهول": "passive",
+  "Ism Maf'ool": "passive",
+  "Passive Participle": "passive",
   "Ism Fa'il": "activeParticiple",
   "Active Participle": "activeParticiple",
 };
@@ -75,13 +84,12 @@ const VERB_FORM_SUFFIX_PATTERN = /-(past|present|command|masdar|passive|activePa
 
 export const getVerbFamilyIdFromCardId = (cardId: string) => cardId.replace(VERB_FORM_SUFFIX_PATTERN, "");
 
-const getVerbFamilyPastForm = (forms: ExposureCard[]) =>
+export const getVerbFamilyPastForm = (forms: ExposureCard[]) =>
   forms.find((form) => form.id.endsWith("-past")) ?? forms[0];
 
-const formatVerbFamilyEnglishWithHarf = (english: string, harf?: string) => {
+const formatVerbFamilyEnglishStem = (english: string) => {
   const stem = stripVerbFormSuffix(normalizeVerbFormEnglish(english));
-  if (!stem) return "";
-  return harf ? `${stem} · ${harf}` : stem;
+  return stem || "";
 };
 
 export const getVerbFamilyHarf = (forms: ExposureCard[]) => forms.find((form) => form.harf)?.harf;
@@ -89,29 +97,40 @@ export const getVerbFamilyHarf = (forms: ExposureCard[]) => forms.find((form) =>
 export const getVerbFamilyEnglishStemLabel = (forms: ExposureCard[]) => {
   const representative = getVerbFamilyPastForm(forms);
   const english = representative?.english?.trim();
-  return english ? stripVerbFormSuffix(normalizeVerbFormEnglish(english)) : "";
+  return english ? formatVerbFamilyEnglishStem(english) : "";
 };
 
-export const getVerbFamilyBrowseMeaning = (verb: VerbFamily) =>
-  formatVerbFamilyEnglishWithHarf(verb.meaning, verb.harf);
+export const getVerbFamilyBrowseMeaning = (verb: VerbFamily) => {
+  const pastEdit = getWordEdit(`${verb.id}-past`)?.english;
+  const meaning = pastEdit?.trim() || verb.meaning;
+  return formatVerbFamilyEnglishStem(meaning);
+};
 
 export const getVerbFamilyMeaningLabel = (forms: ExposureCard[]) => {
   const representative = getVerbFamilyPastForm(forms);
   const english = representative?.english?.trim();
   if (!english) return "";
-  return formatVerbFamilyEnglishWithHarf(english, getVerbFamilyHarf(forms));
+  return formatVerbFamilyEnglishStem(english);
 };
 
-/** Map a verb-form index to the paradigm grid cell index (skips the informational harf cell). */
-export const verbFormIndexToParadigmCellIndex = (forms: ExposureCard[], formIndex: number) => {
+/** Map a verb-form index to the paradigm grid cell index (harf sits after the last form). */
+export const verbFormIndexToParadigmCellIndex = (_forms: ExposureCard[], formIndex: number) => {
   if (formIndex < 0) return -1;
-  const harf = getVerbFamilyHarf(forms);
-  if (!harf) return formIndex;
-  return formIndex === 0 ? 0 : formIndex + 1;
+  return formIndex;
 };
 
 export type VerbBrowseCell =
-  | { kind: "form"; key: VerbFormKey; arabic: string; imageUrl?: string; weak?: boolean }
+  | {
+      kind: "form";
+      key: VerbFormKey;
+      cardId: string;
+      arabic: string;
+      english: string;
+      sourceArabic: string;
+      sourceEnglish: string;
+      imageUrl?: string;
+      weak?: boolean;
+    }
   | { kind: "harf"; arabic: string };
 
 export const getVerbBrowseCells = (verb: VerbFamily): VerbBrowseCell[] => {
@@ -119,16 +138,27 @@ export const getVerbBrowseCells = (verb: VerbFamily): VerbBrowseCell[] => {
   for (const key of VERB_FORM_ORDER) {
     const arabic = verb[key];
     if (typeof arabic !== "string" || !arabic) continue;
+    const cardId = `${verb.id}-${key}`;
+    const sourceEnglish = getVerbFormEnglish(verb, key);
+    const projected = applyWordEditFields(cardId, {
+      arabic,
+      english: sourceEnglish,
+      imageUrl: verb.images?.[key],
+    });
     cells.push({
       kind: "form",
       key,
-      arabic,
-      imageUrl: verb.images?.[key],
+      cardId,
+      arabic: projected.arabic,
+      english: projected.english,
+      sourceArabic: arabic,
+      sourceEnglish,
+      imageUrl: projected.imageUrl,
       weak: verb.hardForms?.[key],
     });
-    if (key === "past" && verb.harf) {
-      cells.push({ kind: "harf", arabic: verb.harf });
-    }
+  }
+  if (verb.harf) {
+    cells.push({ kind: "harf", arabic: verb.harf });
   }
   return cells;
 };
@@ -142,21 +172,19 @@ export type VerbParadigmCell = {
 
 export const buildVerbParadigmCells = (forms: ExposureCard[]): VerbParadigmCell[] => {
   const harf = getVerbFamilyHarf(forms);
-  const cells: VerbParadigmCell[] = [];
-  for (const form of forms) {
+  const cells: VerbParadigmCell[] = forms.map((form) => ({
+    id: form.id,
+    label: form.label ?? "",
+    arabic: form.arabic,
+    imageUrl: form.imageUrl,
+  }));
+  if (harf) {
+    const familyId = forms[0] ? getVerbFamilyIdFromCardId(forms[0].id) : "verb";
     cells.push({
-      id: form.id,
-      label: form.label ?? "",
-      arabic: form.arabic,
-      imageUrl: form.imageUrl,
+      id: `${familyId}-harf`,
+      label: VERB_HARF_ARABIC_LABEL,
+      arabic: harf,
     });
-    if (form.id.endsWith("-past") && harf) {
-      cells.push({
-        id: `${form.id}-harf`,
-        label: VERB_HARF_ARABIC_LABEL,
-        arabic: harf,
-      });
-    }
   }
   return cells;
 };
@@ -552,7 +580,7 @@ const verbFamilyToExposureCards = (
   });
 
 const mapPhraseBatches = <T,>(items: T[], mapper: (item: T, batchIndex: number) => ExposureCard[]) => {
-  const sizes = getBatchSizes(items.length, PHRASE_BATCH_SIZE, true);
+  const sizes = getBatchSizes(items.length, PHRASE_BATCH_SIZE);
   let offset = 0;
   return sizes.flatMap((size, batchIndex) => {
     const slice = items.slice(offset, offset + size);
@@ -561,11 +589,13 @@ const mapPhraseBatches = <T,>(items: T[], mapper: (item: T, batchIndex: number) 
   });
 };
 
-export const buildLessonExposureCards = (lesson: Lesson): ExposureCard[] => [
-  ...buildNounBatchStructure(lesson.nouns).unitBatches.flatMap((batch, batchIndex) =>
+export const buildLessonExposureCards = (lesson: Lesson): ExposureCard[] => {
+  const nouns = [...lesson.nouns, ...lessonExtrasAsNounItems(lesson.id)];
+  const phrases = [...lesson.phrases, ...lessonExtrasAsPhraseItems(lesson.id)];
+  const nounCards = buildNounBatchStructure(nouns).unitBatches.flatMap((batch, batchIndex) =>
     batch.flatMap((unit) => nounUnitToExposureCards(unit, lesson, batchIndex)),
-  ),
-  ...mapPhraseBatches(lesson.phrases, (phrase, batchIndex) => [
+  );
+  const phraseCards = mapPhraseBatches(phrases, (phrase, batchIndex) => [
     {
       id: phrase.id,
       arabic: phrase.arabic,
@@ -574,20 +604,27 @@ export const buildLessonExposureCards = (lesson: Lesson): ExposureCard[] => [
       batchIndex,
       imageUrl: vocabularyImageUrl(lesson, phrase.arabicImage),
     },
-  ]),
-  ...getVerbBatches(lesson.verbs).flatMap((batch, batchIndex) =>
+  ]);
+  const verbCards = getVerbBatches(lesson.verbs).flatMap((batch, batchIndex) =>
     batch.flatMap((verb) => verbFamilyToExposureCards(verb, lesson, batchIndex)),
-  ),
-];
+  );
+
+  return [...nounCards, ...phraseCards, ...verbCards];
+};
 
 const lessonExposureCardsCache = new Map<string, ExposureCard[]>();
 
 export const getCachedLessonExposureCards = (lesson: Lesson): ExposureCard[] => {
-  const cached = lessonExposureCardsCache.get(lesson.id);
+  const revision = `${getWordEditRevision()}:${getLessonExtrasRevision()}`;
+  const cacheKey = `${lesson.id}@${revision}`;
+  const cached = lessonExposureCardsCache.get(cacheKey);
   if (cached) return cached;
 
-  const cards = annotateEnglishCollisions(buildLessonExposureCards(lesson));
-  lessonExposureCardsCache.set(lesson.id, cards);
+  const cards = annotateEnglishCollisions(buildLessonExposureCards(lesson).map(applyWordEdit));
+  for (const key of lessonExposureCardsCache.keys()) {
+    if (key.startsWith(`${lesson.id}@`)) lessonExposureCardsCache.delete(key);
+  }
+  lessonExposureCardsCache.set(cacheKey, cards);
   return cards;
 };
 
@@ -643,6 +680,8 @@ export type VocabularyBrowseRow = {
   id: string;
   arabic: string;
   english: string;
+  sourceArabic: string;
+  sourceEnglish: string;
   imageUrl?: string;
   weak?: boolean;
   batchIndex: number;
@@ -650,8 +689,11 @@ export type VocabularyBrowseRow = {
 
 export type NounBrowseForm = {
   key: NounFormKey;
+  cardId: string;
   arabic: string;
   english: string;
+  sourceArabic: string;
+  sourceEnglish: string;
   imageUrl?: string;
   weak?: boolean;
 };
@@ -664,56 +706,87 @@ export type NounBrowseFamily = {
   weak?: boolean;
 };
 
-export const buildNounBrowseFamilies = (lesson: Lesson): NounBrowseFamily[] =>
-  buildNounBatchStructure(lesson.nouns).unitBatches.flatMap((batch, batchIndex) =>
+const projectNounBrowseForm = (
+  key: NounFormKey,
+  cardId: string,
+  arabic: string,
+  english: string,
+  imageUrl: string | undefined,
+  weak?: boolean,
+): NounBrowseForm => {
+  const projected = applyWordEditFields(cardId, { arabic, english, imageUrl });
+  return {
+    key,
+    cardId,
+    arabic: projected.arabic,
+    english: projected.english,
+    sourceArabic: arabic,
+    sourceEnglish: english,
+    imageUrl: projected.imageUrl,
+    weak,
+  };
+};
+
+export const buildNounBrowseFamilies = (lesson: Lesson): NounBrowseFamily[] => {
+  const nouns = [...lesson.nouns, ...lessonExtrasAsNounItems(lesson.id)];
+  const families = buildNounBatchStructure(nouns).unitBatches.flatMap((batch, batchIndex) =>
     batch.map((unit) => {
       if (isNounStemGroupWithPlural(unit)) {
         const singular = unit.find((item) => !isNounPluralItem(item)) ?? unit[0]!;
         const plural = unit.find(isNounPluralItem);
+        const familyId = singular.id;
         const forms: NounBrowseForm[] = [
-          {
-            key: "singular",
-            arabic: singular.arabic,
-            english: singular.english,
-            imageUrl: vocabularyImageUrl(lesson, singular.arabicImage),
-            weak: singular.hard,
-          },
+          projectNounBrowseForm(
+            "singular",
+            `${familyId}-singular`,
+            singular.arabic,
+            singular.english,
+            vocabularyImageUrl(lesson, singular.arabicImage),
+            singular.hard,
+          ),
         ];
         if (plural) {
-          forms.push({
-            key: "plural",
-            arabic: plural.arabic,
-            english: plural.english,
-            imageUrl: vocabularyImageUrl(lesson, plural.arabicImage),
-            weak: plural.hard,
-          });
+          forms.push(
+            projectNounBrowseForm(
+              "plural",
+              `${familyId}-plural`,
+              plural.arabic,
+              plural.english,
+              vocabularyImageUrl(lesson, plural.arabicImage),
+              plural.hard,
+            ),
+          );
         }
+        const meaningSource = forms[0]!;
         return {
-          id: singular.id,
+          id: familyId,
           batchIndex,
-          meaning: stripVerbFormSuffix(singular.english),
+          meaning: stripVerbFormSuffix(meaningSource.english),
           forms,
           weak: singular.hard || plural?.hard,
         };
       }
       const noun = unit[0]!;
+      const form = projectNounBrowseForm(
+        "singular",
+        noun.id,
+        noun.arabic,
+        noun.english,
+        vocabularyImageUrl(lesson, noun.arabicImage),
+        noun.hard,
+      );
       return {
         id: noun.id,
         batchIndex,
-        meaning: noun.english,
-        forms: [
-          {
-            key: "singular",
-            arabic: noun.arabic,
-            english: noun.english,
-            imageUrl: vocabularyImageUrl(lesson, noun.arabicImage),
-            weak: noun.hard,
-          },
-        ],
+        meaning: form.english,
+        forms: [form],
         weak: noun.hard,
       };
     }),
   );
+
+  return families;
+};
 
 /** @deprecated Use buildNounBrowseFamilies for browse UI. */
 export const buildNounBrowseRows = (lesson: Lesson): VocabularyBrowseRow[] =>
@@ -721,6 +794,8 @@ export const buildNounBrowseRows = (lesson: Lesson): VocabularyBrowseRow[] =>
     id: family.id,
     arabic: family.forms.map((form) => form.arabic).join(" · "),
     english: family.meaning,
+    sourceArabic: family.forms.map((form) => form.sourceArabic).join(" · "),
+    sourceEnglish: family.forms[0]?.sourceEnglish ?? family.meaning,
     imageUrl: family.forms[0]?.imageUrl,
     weak: family.weak,
     batchIndex: family.batchIndex,
@@ -730,24 +805,33 @@ const buildPhraseBrowseRowsFromItems = (
   lesson: Lesson,
   phrases: Lesson["phrases"],
 ): VocabularyBrowseRow[] => {
-  const sizes = getBatchSizes(phrases.length, PHRASE_BATCH_SIZE, true);
+  const sizes = getBatchSizes(phrases.length, PHRASE_BATCH_SIZE);
   let offset = 0;
   return sizes.flatMap((size, batchIndex) => {
     const slice = phrases.slice(offset, offset + size);
     offset += size;
-    return slice.map((phrase) => ({
-      id: phrase.id,
-      arabic: phrase.arabic,
-      english: phrase.english,
-      imageUrl: vocabularyImageUrl(lesson, phrase.arabicImage),
-      weak: phrase.hard,
-      batchIndex,
-    }));
+    return slice.map((phrase) => {
+      const projected = applyWordEditFields(phrase.id, {
+        arabic: phrase.arabic,
+        english: phrase.english,
+        imageUrl: vocabularyImageUrl(lesson, phrase.arabicImage),
+      });
+      return {
+        id: phrase.id,
+        arabic: projected.arabic,
+        english: projected.english,
+        sourceArabic: phrase.arabic,
+        sourceEnglish: phrase.english,
+        imageUrl: projected.imageUrl,
+        weak: phrase.hard,
+        batchIndex,
+      };
+    });
   });
 };
 
 export const buildPhraseBrowseRows = (lesson: Lesson): VocabularyBrowseRow[] =>
-  buildPhraseBrowseRowsFromItems(lesson, lesson.phrases);
+  buildPhraseBrowseRowsFromItems(lesson, [...lesson.phrases, ...lessonExtrasAsPhraseItems(lesson.id)]);
 
 export const buildVerbBrowseBatches = (verbs: VerbFamily[]): { batchIndex: number; verb: VerbFamily }[] =>
   getVerbBatches(verbs).flatMap((batch, batchIndex) => batch.map((verb) => ({ batchIndex, verb })));

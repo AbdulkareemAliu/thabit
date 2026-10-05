@@ -13,9 +13,10 @@ type EnglishCueProps = {
   className?: string;
   size?: "lg" | "sm";
   showImageHint?: boolean;
+  lessonLabel?: string;
 };
 
-export function EnglishCue({ card, contextCards, className = ``, size = `lg`, showImageHint = false }: EnglishCueProps) {
+export function EnglishCue({ card, contextCards, className = ``, size = `lg`, showImageHint = false, lessonLabel }: EnglishCueProps) {
   const displayCard = getEnglishCueDisplayCard(card, contextCards);
   const { stem, tags } = getEnglishCueParts(displayCard);
   const hasVariant = (displayCard.englishVariantTotal ?? 0) > 1;
@@ -28,6 +29,11 @@ export function EnglishCue({ card, contextCards, className = ``, size = `lg`, sh
         {variantLabel && (
           <span className={`english-cue-variant`} aria-label={`English variant ${variantLabel}`}>
             {variantLabel}
+          </span>
+        )}
+        {lessonLabel && (
+          <span className={`english-cue-lesson`} aria-label={lessonLabel}>
+            {lessonLabel}
           </span>
         )}
       </p>

@@ -1,4 +1,4 @@
-import { MIN_NON_VERB_BATCH_SIZE, NOUN_BATCH_SIZE, VERB_BATCH_SIZE } from "./config";
+import { MAX_BATCH_SIZE, MIN_BATCH_SIZE, VERB_BATCH_SIZE } from "./config";
 import type { NounItem, VerbFamily } from "./types";
 
 export const normalizeEnglishTag = (tag: string): string => {
@@ -66,28 +66,29 @@ const groupConsecutiveByStem = <T,>(items: T[], getEnglish: (item: T) => string)
   return groups;
 };
 
-const packUnitsIntoBatches = <T,>(units: T[][], targetSize: number, shouldMergeSmallFinalBatch: boolean): T[][] => {
+/** Split `count` items into batches of MIN_BATCH_SIZE…MAX_BATCH_SIZE without leftover dumps. */
+export const evenBatchSizes = (count: number, _minSize = MIN_BATCH_SIZE, maxSize = MAX_BATCH_SIZE): number[] => {
+  if (count <= 0) return [];
+  if (count <= maxSize) return [count];
+
+  const batchCount = Math.ceil(count / maxSize);
+  const base = Math.floor(count / batchCount);
+  const extra = count % batchCount;
+  return Array.from({ length: batchCount }, (_, index) => base + (index < extra ? 1 : 0));
+};
+
+const sliceBySizes = <T,>(items: T[], sizes: number[]): T[][] => {
   const batches: T[][] = [];
-  let current: T[] = [];
-
-  for (const unit of units) {
-    if (current.length > 0 && current.length + unit.length > targetSize) {
-      batches.push(current);
-      current = [];
-    }
-    current.push(...unit);
+  let offset = 0;
+  for (const size of sizes) {
+    batches.push(items.slice(offset, offset + size));
+    offset += size;
   }
-
-  if (current.length > 0) batches.push(current);
-
-  const finalSize = batches.at(-1)?.length ?? 0;
-  if (shouldMergeSmallFinalBatch && batches.length > 1 && finalSize < MIN_NON_VERB_BATCH_SIZE) {
-    const trailing = batches.pop() ?? [];
-    batches[batches.length - 1].push(...trailing);
-  }
-
   return batches;
 };
+
+const packUnitsIntoBatches = <T,>(units: T[][], maxSize: number): T[][] =>
+  sliceBySizes(units, evenBatchSizes(units.length, MIN_BATCH_SIZE, maxSize)).map((batch) => batch.flat());
 
 export const isNounPluralItem = (noun: NounItem) => parseEnglishStemAndTags(noun.english).tags.includes("p");
 
@@ -99,28 +100,8 @@ const expandNounStemGroupToUnits = (group: NounItem[]): NounItem[][] => {
   return group.map((item) => [item]);
 };
 
-const packNounUnitsIntoBatches = (units: NounItem[][]): NounItem[][][] => {
-  const batches: NounItem[][][] = [];
-  let currentUnits: NounItem[][] = [];
-
-  for (const unit of units) {
-    if (currentUnits.length > 0 && currentUnits.length + 1 > NOUN_BATCH_SIZE) {
-      batches.push(currentUnits);
-      currentUnits = [];
-    }
-    currentUnits.push(unit);
-  }
-
-  if (currentUnits.length > 0) batches.push(currentUnits);
-
-  const finalUnitCount = batches.at(-1)?.length ?? 0;
-  if (batches.length > 1 && finalUnitCount < MIN_NON_VERB_BATCH_SIZE) {
-    const trailingUnits = batches.pop() ?? [];
-    batches[batches.length - 1].push(...trailingUnits);
-  }
-
-  return batches;
-};
+const packNounUnitsIntoBatches = (units: NounItem[][]): NounItem[][][] =>
+  sliceBySizes(units, evenBatchSizes(units.length));
 
 export const buildNounBatchStructure = (nouns: NounItem[]) => {
   const stemGroups = groupConsecutiveByStem(nouns, (item) => item.english).map((group) =>
@@ -145,5 +126,4 @@ export const getVerbBatches = (verbs: VerbFamily[]): VerbFamily[][] =>
   packUnitsIntoBatches(
     verbs.map((verb) => [verb]),
     VERB_BATCH_SIZE,
-    true,
   );

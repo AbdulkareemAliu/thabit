@@ -516,6 +516,10 @@ button {
 }
 
 .verb-family-paradigm-cell.is-harf {
+    grid-column: 1 / -1;
+    justify-self: center;
+    width: 100%;
+    max-width: 7.5rem;
     opacity: 0.55;
 }
 
@@ -740,6 +744,20 @@ button {
     transform: translateY(0.08em);
 }
 
+.english-cue-lesson {
+    flex: none;
+    margin-inline-start: 0.35rem;
+    padding: 0.12em 0.4em;
+    border: 1px solid rgba(214, 181, 109, 0.28);
+    border-radius: 999px;
+    font-size: 0.58em;
+    line-height: 1.2;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    color: rgba(232, 215, 161, 0.78);
+    transform: translateY(0.18em);
+}
+
 .english-cue-lg .english-cue-stem {
     font-size: 1.5rem;
     line-height: 1.35;
@@ -760,6 +778,7 @@ button {
 
 .exposure-say-face.is-dimmed .english-cue-sm .english-cue-stem,
 .exposure-say-face.is-dimmed .english-cue-sm .english-cue-variant,
+.exposure-say-face.is-dimmed .english-cue-sm .english-cue-lesson,
 .exposure-say-face.is-dimmed .english-cue-tag {
     opacity: 0.34;
 }
@@ -976,20 +995,24 @@ button {
     display: flex;
     align-items: center;
     justify-content: center;
-    gap: 1.25rem;
-    font-size: 0.68rem;
-    font-weight: 650;
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
-    color: rgba(120, 113, 108, 0.9);
+    flex-wrap: nowrap;
+    gap: 0.45rem;
+}
+
+.exposure-write-steps span {
+    flex-shrink: 0;
+    width: 0.45rem;
+    height: 0.45rem;
+    border-radius: 999px;
+    background: rgba(120, 113, 108, 0.38);
 }
 
 .exposure-write-steps span.is-active {
-    color: #e8d7a1;
+    background: #e8d7a1;
 }
 
 .exposure-write-steps span.is-done {
-    color: rgba(214, 181, 109, 0.55);
+    background: rgba(214, 181, 109, 0.55);
 }
 
 .exposure-footer {
@@ -1311,6 +1334,23 @@ button {
     letter-spacing: 0.24em;
     text-transform: uppercase;
     color: rgba(214, 181, 109, 0.68);
+}
+
+.settings-number {
+    width: 4.5rem;
+    flex-shrink: 0;
+    border: 1px solid rgba(214, 181, 109, 0.2);
+    background: rgba(8, 21, 17, 0.8);
+    color: #e8d7a1;
+    border-radius: 0.5rem;
+    padding: 0.4rem 0.5rem;
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+}
+
+.settings-number:focus {
+    outline: none;
+    border-color: rgba(214, 181, 109, 0.45);
 }
 
 .writing-vertical {

@@ -1,7 +1,7 @@
 import { getBatchReviewGroupSizes, MAX_BATCHES_WITHOUT_REVIEW, shouldIncludeSectionTest } from "./batch-groups";
-import { countNounFamilyUnits, getNounBatchUnitCounts, getVerbBatches, parseEnglishStemAndTags } from "./batching";
+import { countNounFamilyUnits, evenBatchSizes, getNounBatchUnitCounts, getVerbBatches, parseEnglishStemAndTags } from "./batching";
 import { countVerbFamilyForms, normalizeVerbFormEnglish } from "./exposure-cards";
-import { MIN_NON_VERB_BATCH_SIZE, NOUN_BATCH_SIZE, PHRASE_BATCH_SIZE, VERB_BATCH_SIZE } from "./config";
+import { MAX_BATCH_SIZE, PHRASE_BATCH_SIZE } from "./config";
 import type { Lesson, LessonStep, NounItem, SectionKind, VerbFamily, VerbFormKey } from "./types";
 
 type CsvRow = Record<string, string>;
@@ -130,26 +130,7 @@ const verbHardColumns: Array<{ key: VerbFormKey; hard: string }> = [
   { key: "activeParticiple", hard: "active_participle_hard" },
 ];
 
-export const getBatchSizes = (count: number, batchSize: number, shouldMergeSmallFinalBatch: boolean) => {
-  if (count <= 0) return [];
-
-  const sizes: number[] = [];
-  let remaining = count;
-
-  while (remaining > 0) {
-    const nextSize = Math.min(batchSize, remaining);
-    sizes.push(nextSize);
-    remaining -= nextSize;
-  }
-
-  const finalSize = sizes.at(-1) ?? 0;
-  if (shouldMergeSmallFinalBatch && sizes.length > 1 && finalSize < MIN_NON_VERB_BATCH_SIZE) {
-    sizes[sizes.length - 2] += finalSize;
-    sizes.pop();
-  }
-
-  return sizes;
-};
+export const getBatchSizes = (count: number, maxSize = MAX_BATCH_SIZE) => evenBatchSizes(count, undefined, maxSize);
 
 const makeBatchSteps = ({
   lessonId,
@@ -163,7 +144,7 @@ const makeBatchSteps = ({
   section: SectionKind;
   count: number;
   batchSize: number;
-}) => makeSectionBatchSteps({ lessonId, title, section, batchSizes: getBatchSizes(count, batchSize, section !== "verbs") });
+}) => makeSectionBatchSteps({ lessonId, title, section, batchSizes: getBatchSizes(count, batchSize) });
 
 const getSectionUnitLabel = (_section: SectionKind) => "Batch";
 
@@ -247,7 +228,7 @@ const makeSteps = ({ lessonId, nouns, verbs, phraseCount }: { lessonId: string; 
   const verbFormCount = verbs.reduce((sum, verb) => sum + countVerbFamilyForms(verb), 0);
   const verbBatches = getVerbBatches(verbs);
   const nounBatchSizes = getNounBatchUnitCounts(nouns);
-  const phraseBatchSizes = getBatchSizes(phraseCount, PHRASE_BATCH_SIZE, true);
+  const phraseBatchSizes = getBatchSizes(phraseCount, PHRASE_BATCH_SIZE);
 
   steps.push(
     ...makeSectionBatchSteps({
@@ -338,7 +319,8 @@ export const lessons: Lesson[] = Object.values(byLesson)
           plural: row.plural || undefined,
           hard: parseBool(row.hard),
         };
-      });
+      })
+      .filter((noun) => noun.arabic.trim() !== "-");
 
     const phrases = parsePhraseRows(lessonCsv.phrases ?? [], lessonId);
 
