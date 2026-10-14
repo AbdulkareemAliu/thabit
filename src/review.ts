@@ -25,7 +25,6 @@ const MAX_INTERVAL_7_SPREAD_MIGRATION_KEY = "thabit.migration.maxInterval7Spread
 const REVIEW_CONTENT_ID_MIGRATION_KEY = "thabit.migration.reviewContentIds_v1";
 const NOUN_REVIEW_INSERT_MIGRATION_KEY = "thabit.migration.reviewNounInsert_v1";
 const MISS_STACK_SPREAD_MIGRATION_KEY = "thabit.migration.missStackSpread_v1";
-const REVIEW_BACKLOG_BALANCE_MIGRATION_KEY = "thabit.migration.reviewBacklogBalance_v1";
 /** Default used by one-time interval-cap migrations. Live caps read `getSettings()`. */
 export const MAX_INTERVAL_DAYS = 7;
 const DEFAULT_EASE = 2.5;
@@ -299,14 +298,12 @@ export const applyMaxInterval7SpreadMigration = (
   );
 };
 
-/** Repair the large single-day piles left by the old calendar shift and interval migrations. */
-export const applyReviewBacklogBalanceMigration = (
+/** Smooth large future piles while preserving cards that are already due. */
+export const balanceReviewCalendar = (
   allLessons: Lesson[],
   completedStepIds: string[],
   getCardsForLesson: (lesson: Lesson) => ReviewableCard[],
 ) => {
-  if (window.localStorage.getItem(REVIEW_BACKLOG_BALANCE_MIGRATION_KEY)) return false;
-
   const today = todayKey();
   const windowDays = Math.max(1, maxIntervalDays() + scheduleJitterDays());
   const horizon = addDays(today, windowDays);
@@ -331,11 +328,9 @@ export const applyReviewBacklogBalanceMigration = (
       counts[offset] += 1;
     }
     writeReviewCards(cards);
-    window.localStorage.removeItem("thabit.dailyReviewSession");
+    return true;
   }
-
-  window.localStorage.setItem(REVIEW_BACKLOG_BALANCE_MIGRATION_KEY, "1");
-  return future.length >= 10 && largestFuturePile > Math.max(10, target * 2);
+  return false;
 };
 
 /** Merge legacy per-form verb review records into one schedule per family. */
@@ -596,7 +591,7 @@ export const applyShorterNewCardStaggerMigration = (
 /**
  * If any eligible cards are overdue, slide the whole eligible calendar forward so the oldest
  * overdue day becomes today. Missed days are skipped instead of piling onto today.
- * Clears an in-progress daily review session so a stacked queue is not restored.
+ * Keep the spacing between scheduled days when a study day is missed.
  */
 export const shiftOverdueReviewCalendar = (
   allLessons: Lesson[],
@@ -621,9 +616,19 @@ export const shiftOverdueReviewCalendar = (
     record.dueAt = addDays(record.dueAt, gap);
   }
   writeReviewCards(cards);
-  // Avoid importing daily-review-session (it imports this module).
-  window.localStorage.removeItem("thabit.dailyReviewSession");
   return true;
+};
+
+const hasUnfinishedDailyReviewSession = () => {
+  try {
+    const stored = window.localStorage.getItem("thabit.dailyReviewSession");
+    if (!stored) return false;
+    const session = JSON.parse(stored);
+    return (session.phase === "study" || session.phase === "replay") &&
+      (session.queue?.length > 0 || session.replayQueue?.length > 0 || session.missed?.length > 0);
+  } catch {
+    return false;
+  }
 };
 
 export const syncReviewPool = (allLessons: Lesson[], completedStepIds: string[], getCardsForLesson: (lesson: Lesson) => ReviewableCard[]) => {
@@ -658,7 +663,10 @@ export const syncReviewPool = (allLessons: Lesson[], completedStepIds: string[],
 
   if (changed) writeReviewCards(cards);
   applyMaxInterval7SpreadMigration(allLessons, completedStepIds, getCardsForLesson);
-  applyReviewBacklogBalanceMigration(allLessons, completedStepIds, getCardsForLesson);
+  if (!hasUnfinishedDailyReviewSession()) {
+    shiftOverdueReviewCalendar(allLessons, completedStepIds, getCardsForLesson);
+    balanceReviewCalendar(allLessons, completedStepIds, getCardsForLesson);
+  }
 };
 
 const scheduleLearningSuccess = (record: ReviewCardRecord, today: string): ReviewCardRecord => {

@@ -50,10 +50,7 @@ const restorePromptList = (serialized: SerializedStudyPrompt[] | undefined, revi
 
 export const readActiveDailyReviewSession = () => {
   const session = readSession();
-  if (!session || session.dateKey !== todayKey()) {
-    if (session) clearDailyReviewSession();
-    return null;
-  }
+  if (!session) return null;
   if (session.phase !== "study" && session.phase !== "replay") return null;
   if (session.queue.length === 0 && session.replayQueue.length === 0 && session.missed.length === 0) return null;
 

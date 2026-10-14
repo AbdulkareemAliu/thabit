@@ -3406,6 +3406,23 @@ function DailyReviewScreen({ completedStepIds: e, onRecordStudyDay: t, onNavigat
     [b, x] = useState(0),
     studyPrep = useMemo(() => prepareDailyReviewStudyCards(reviewQueue), [reviewQueue]),
     S = useMemo(() => buildDailyReviewFlashcardQueue(reviewQueue, studyPrep).length, [reviewQueue, studyPrep]);
+  const sessionSnapshot = useRef<Parameters<typeof writeDailyReviewSession>[0] | null>(null);
+  sessionSnapshot.current = a || (s !== `study` && s !== `replay`) ? null : {
+    phase: s,
+    reviewQueue,
+    queue: u.map(serializeStudyPrompt),
+    replayQueue: f.map(serializeStudyPrompt),
+    missed: m.map(serializeStudyPrompt),
+    correctCount: v,
+    missedCount: b,
+  };
+  useEffect(() => {
+    const saveBeforeClose = () => {
+      if (sessionSnapshot.current) writeDailyReviewSession(sessionSnapshot.current);
+    };
+    window.addEventListener(`pagehide`, saveBeforeClose);
+    return () => window.removeEventListener(`pagehide`, saveBeforeClose);
+  }, []);
   useEffect(() => {
     o(!0);
     let timeout = window.setTimeout(() => {
